@@ -1,0 +1,1 @@
+offrem Резервная копия базы НТО и папки с файлами. Запускать вручную или по расписанию Windows.set DEST=D:\NTO_backupif not exist "%DEST%" mkdir "%DEST%"set STAMP=2026-11-18sqlcmd -S localhost\SQLEXPRESS -E -Q "BACKUP DATABASE NtoDB TO DISK='%DEST%\NtoDB_%STAMP%.bak' WITH INIT"robocopy "%~dp0uploads" "%DEST%\uploads" /E /XD _удалённые  Готово: %DEST%

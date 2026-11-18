@@ -1,0 +1,1237 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>НТО и МКД — Автодорожный округ г. Якутска</title>
+
+<!-- Leaflet (бесплатная интерактивная карта, без API-ключа) -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+<style>
+:root{
+  --bg:#0f172a; --bg2:#1e293b; --card:#ffffff; --line:#e2e8f0; --line2:#cbd5e1;
+  --fg:#0f172a; --fg2:#475569; --muted:#94a3b8;
+  --acc:#2563eb; --acc2:#1d4ed8; --acc-h:#3b82f6;
+  --ok:#16a34a; --ok-bg:#dcfce7;
+  --warn:#d97706; --warn-bg:#fef3c7;
+  --err:#dc2626; --err-bg:#fee2e2;
+  --info:#0891b2; --info-bg:#cffafe;
+  --shadow-sm:0 1px 2px rgba(15,23,42,.06);
+  --shadow:0 4px 6px -1px rgba(15,23,42,.1),0 2px 4px -2px rgba(15,23,42,.06);
+  --shadow-lg:0 10px 15px -3px rgba(15,23,42,.1),0 4px 6px -4px rgba(15,23,42,.05);
+  --shadow-xl:0 20px 25px -5px rgba(15,23,42,.1),0 8px 10px -6px rgba(15,23,42,.05);
+  --radius:10px; --radius-lg:14px;
+  --grad:linear-gradient(135deg,#1e3a8a 0%,#2563eb 50%,#0891b2 100%);
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Arial,sans-serif;background:#f1f5f9;color:var(--fg);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+a{color:var(--acc);text-decoration:none;transition:color .15s}
+a:hover{color:var(--acc-h);text-decoration:underline}
+button,.btn{font:inherit;font-size:13px;font-weight:500;padding:8px 14px;border:0;border-radius:8px;cursor:pointer;background:var(--acc);color:#fff;transition:all .15s;display:inline-flex;align-items:center;gap:6px;white-space:nowrap}
+button:hover,.btn:hover{background:var(--acc-h);transform:translateY(-1px);box-shadow:var(--shadow)}
+button:active{transform:translateY(0)}
+button.gray{background:#64748b}button.gray:hover{background:#475569}
+button.green{background:var(--ok)}button.green:hover{background:#15803d}
+button.red{background:var(--err)}button.red:hover{background:#b91c1c}
+button.outline{background:transparent;color:var(--fg2);border:1px solid var(--line2)}button.outline:hover{background:#f8fafc;color:var(--fg)}
+button:disabled{opacity:.5;cursor:not-allowed;transform:none}
+button.icon{padding:6px;width:32px;height:32px;justify-content:center}
+input,select,textarea{font:inherit;padding:8px 12px;border:1px solid var(--line2);border-radius:8px;background:#fff;color:var(--fg);width:100%;transition:all .15s}
+input:focus,select:focus,textarea:focus{outline:0;border-color:var(--acc);box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+textarea{resize:vertical;min-height:60px;font-family:inherit}
+input[type=checkbox]{width:auto;margin:0}
+label{font-size:12px;font-weight:500;color:var(--fg2);display:block;margin-bottom:4px}
+label.chk{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--fg);font-weight:400}
+label.chk input{width:16px;height:16px}
+
+/* ====== LAYOUT ====== */
+header{background:var(--grad);color:#fff;padding:0 20px;height:60px;display:flex;align-items:center;gap:14px;box-shadow:var(--shadow-lg);position:sticky;top:0;z-index:100}
+header h1{font-size:16px;font-weight:600;margin:0;flex:1;letter-spacing:-.01em;display:flex;align-items:center;gap:10px;min-width:0}
+header h1 .logo{width:32px;height:32px;background:rgba(255,255,255,.15);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;backdrop-filter:blur(10px)}
+header h1 .title-text{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+header .who{font-size:12px;color:rgba(255,255,255,.85);white-space:nowrap;display:flex;align-items:center;gap:6px}
+header .who .dot{width:8px;height:8px;background:#22c55e;border-radius:50%;box-shadow:0 0 0 3px rgba(34,197,94,.3)}
+header button{background:rgba(255,255,255,.15);color:#fff;backdrop-filter:blur(10px)}
+header button:hover{background:rgba(255,255,255,.25)}
+header button.gray{background:rgba(255,255,255,.1)}
+
+.tabs{background:#fff;border-bottom:1px solid var(--line);padding:0 20px;display:flex;gap:4px;position:sticky;top:60px;z-index:90;box-shadow:var(--shadow-sm)}
+.tab{padding:14px 20px;cursor:pointer;font-size:14px;font-weight:500;color:var(--fg2);border:0;background:transparent;border-bottom:3px solid transparent;transition:all .15s;display:flex;align-items:center;gap:8px}
+.tab:hover{color:var(--fg);background:#f8fafc}
+.tab.on{color:var(--acc);border-bottom-color:var(--acc);font-weight:600}
+.tab .count{background:#e0e7ff;color:var(--acc);padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600}
+.tab.on .count{background:var(--acc);color:#fff}
+
+.bar{padding:14px 20px;background:#fff;border-bottom:1px solid var(--line);display:flex;gap:10px;flex-wrap:wrap;align-items:center;box-shadow:var(--shadow-sm)}
+.bar input,.bar select{width:auto;min-width:120px}
+.bar .grow{flex:1;min-width:200px}
+.bar .sep{width:1px;height:24px;background:var(--line);margin:0 4px}
+
+.cnt{padding:8px 20px;color:var(--muted);font-size:12px;display:flex;align-items:center;gap:8px}
+.cnt b{color:var(--fg2);font-weight:600}
+
+.wrap{padding:0 20px 24px;overflow-x:auto}
+table{width:100%;border-collapse:collapse;background:#fff;border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow)}
+th,td{padding:11px 14px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+th{background:#f8fafc;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--fg2);white-space:nowrap;cursor:pointer;position:sticky;top:0;z-index:5;transition:background .15s}
+th:hover{background:#f1f5f9}
+td{font-size:13px;color:var(--fg)}
+tr.row{cursor:pointer;transition:background .1s}
+tr.row:hover{background:#eff6ff}
+tr:last-child td{border-bottom:0}
+
+.tnum{font-variant-numeric:tabular-nums;color:var(--fg2);font-weight:600}
+.taddr{max-width:280px}
+.tname{max-width:200px}
+.tinn{font-variant-numeric:tabular-nums;color:var(--fg2);font-size:12px}
+.tspec{max-width:180px;color:var(--fg2)}
+.tfiles{text-align:center;color:var(--muted);font-weight:500}
+
+/* ====== BADGES ====== */
+.badge{display:inline-flex;align-items:center;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600;white-space:nowrap;letter-spacing:.01em}
+.b-Действует{background:var(--ok-bg);color:#166534}
+.b-Истекает{background:var(--warn-bg);color:#92400e}
+.b-Истёк{background:var(--err-bg);color:#991b1b}
+.b-Расторгнут,.b-Прекращён{background:#e5e7eb;color:#374151}
+.b-На{background:#ffedd5;color:#9a3412}
+.b-Срок{background:#ede9fe;color:#5b21b6}
+.b-Нет{background:#f3f4f6;color:#6b7280}
+.tag-in{background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;letter-spacing:.02em;text-transform:uppercase}
+.tag-out{background:#f3e8ff;color:#6b21a8;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+.tag-em{background:var(--err-bg);color:#991b1b;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+.tag-nouk{background:var(--warn-bg);color:#92400e;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+
+/* ====== MODAL ====== */
+.modal{position:fixed;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(4px);display:none;overflow:auto;z-index:200;padding:20px 0}
+.modal.show{display:flex;align-items:flex-start;justify-content:center;animation:fadeIn .2s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.box{background:#fff;max-width:920px;width:calc(100% - 40px);margin:0 auto;border-radius:var(--radius-lg);box-shadow:var(--shadow-xl);overflow:hidden;animation:slideUp .25s ease}
+@keyframes slideUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.box-h{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;background:linear-gradient(135deg,#f8fafc 0%,#f1f5f9 100%)}
+.box-h h3{margin:0;font-size:16px;flex:1;font-weight:600;color:var(--fg)}
+.box-h .close-btn{padding:6px;width:32px;height:32px;justify-content:center;font-size:18px;line-height:1;color:var(--fg2);background:transparent}
+.box-h .close-btn:hover{background:#fee2e2;color:var(--err)}
+.box-b{padding:20px;max-height:calc(100vh - 200px);overflow:auto}
+.box-f{padding:12px 20px;border-top:1px solid var(--line);background:#f8fafc;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;align-items:center}
+.box-f .left{margin-right:auto}
+@media(max-width:780px){.box{margin:0;border-radius:0;width:100%}.box-b{padding:14px;max-height:calc(100vh - 140px)}}
+
+/* ====== CARD SECTIONS ====== */
+.state-box{padding:14px 16px;border-radius:var(--radius);background:linear-gradient(135deg,#eff6ff 0%,#dbeafe 100%);border:1px solid #bfdbfe;margin-bottom:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.state-box .lbl{font-size:11px;color:#1e40af;text-transform:uppercase;letter-spacing:.05em;font-weight:600}
+.state-box .val{font-size:14px;font-weight:700;color:#1e3a8a}
+.state-box .hint{font-size:12px;color:#3b82f6}
+
+.section{border:1px solid var(--line);border-radius:var(--radius);margin-bottom:12px;overflow:hidden;background:#fff}
+.section>h4{margin:0;padding:11px 14px;background:linear-gradient(135deg,#f8fafc,#f1f5f9);font-size:12px;font-weight:700;color:var(--fg2);text-transform:uppercase;letter-spacing:.05em;display:flex;align-items:center;gap:8px}
+.section>h4 .sec-icon{width:18px;height:18px;background:var(--acc);color:#fff;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}
+.section>.body{padding:14px;display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.section>.body .full{grid-column:1/-1}
+.field label{font-size:11px;color:var(--fg2);text-transform:uppercase;letter-spacing:.03em;font-weight:600}
+.field .val{font-size:13px;padding:5px 0;color:var(--fg);word-break:break-word;line-height:1.4}
+.field .val.empty{color:var(--muted);font-style:italic}
+.field .val a{color:var(--acc);font-weight:500}
+
+/* ====== FILES ====== */
+.files{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(140px,1fr))}
+.file-item{border:1px solid var(--line);border-radius:var(--radius);padding:8px;font-size:12px;background:#fff;transition:all .15s}
+.file-item:hover{box-shadow:var(--shadow);transform:translateY(-2px)}
+.file-item img{width:100%;height:90px;object-fit:cover;border-radius:6px;margin-bottom:6px;background:#f1f5f9}
+.file-item .nm{word-break:break-all;line-height:1.3;color:var(--fg);font-weight:500}
+.file-item .cap{color:var(--muted);font-size:11px;margin:2px 0}
+.file-item button{margin-top:6px;padding:3px 8px;font-size:11px}
+
+.leaflet-attribution-flag{display:none !important}
+
+/* ====== TABLES (Journal, Online) ====== */
+.jtable{font-size:12px;width:100%;border-collapse:collapse}
+.jtable th{background:#f8fafc;font-size:11px;padding:8px 10px;text-align:left;color:var(--fg2);position:static}
+.jtable td{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+.jtable .vv{max-width:280px;word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11px;color:var(--fg2)}
+.jtable tr:hover{background:#f8fafc}
+
+.online-table{width:100%;font-size:13px;border-collapse:collapse}
+.online-table th{background:#f8fafc;font-size:11px;padding:10px;text-align:left;color:var(--fg2);position:static}
+.online-table td{padding:10px;border-bottom:1px solid var(--line);vertical-align:top}
+.dot-on,.dot-off{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:8px;vertical-align:middle}
+.dot-on{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.2);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 3px rgba(34,197,94,.2)}50%{box-shadow:0 0 0 6px rgba(34,197,94,.1)}}
+.dot-off{background:var(--muted)}
+
+/* ====== MAP ====== */
+#mapCanvas{height:60vh;min-height:400px;border-radius:var(--radius-lg);overflow:hidden;box-shadow:var(--shadow-lg);border:2px solid var(--line)}
+.map-toolbar{margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:12px;background:#fff;border-radius:var(--radius);box-shadow:var(--shadow-sm)}
+.map-info-panel{margin-top:12px;padding:14px;background:#fff;border-radius:var(--radius);box-shadow:var(--shadow-sm);font-size:13px;min-height:40px;border-left:4px solid var(--acc)}
+.map-legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--fg2);align-items:center}
+.map-legend span{display:inline-flex;align-items:center;gap:5px}
+.map-legend i{width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #aaa;display:inline-block}
+
+.leaflet-attribution-flag {
+  display: none !important;
+}
+
+/* Custom Leaflet marker styles */
+.custom-marker{background:transparent;border:0}
+.custom-marker .pin{width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.3);position:relative;transition:transform .15s}
+.custom-marker:hover .pin{transform:rotate(-45deg) scale(1.15)}
+.custom-marker.sel .pin{transform:rotate(-45deg) scale(1.25);box-shadow:0 0 0 6px rgba(37,99,235,.3),0 3px 8px rgba(0,0,0,.3)}
+.custom-marker .pin::after{content:"";position:absolute;top:7px;left:7px;width:10px;height:10px;background:#fff;border-radius:50%}
+.custom-marker.test .pin{opacity:.7;border-style:dashed}
+.leaflet-popup-content{font-size:13px;line-height:1.4}
+.leaflet-popup-content b{color:var(--fg)}
+.leaflet-popup-content .pop-actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.leaflet-popup-content button{padding:4px 10px;font-size:11px}
+
+/* ====== MKD form ====== */
+.fg2{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px 14px;margin:8px 0}
+.fg2 .full{grid-column:1/-1}
+.fg2 .chk{display:flex;align-items:center;gap:8px;padding-top:18px}
+details{margin-top:10px;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff}
+details>summary{padding:10px 14px;cursor:pointer;font-weight:600;color:var(--fg2);background:#f8fafc;font-size:13px;display:flex;align-items:center;gap:8px}
+details>summary:hover{background:#f1f5f9}
+details[open]>summary{border-bottom:1px solid var(--line)}
+details .body{padding:14px}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;margin:10px 0;font-size:13px}
+.kv div:nth-child(odd){color:var(--fg2);font-weight:500}
+.kv div:nth-child(even){color:var(--fg)}
+
+/* ====== TOAST ====== */
+#toasts{position:fixed;top:80px;right:20px;z-index:300;display:flex;flex-direction:column;gap:8px;pointer-events:none}
+.toast{background:#fff;border-left:4px solid var(--acc);padding:12px 16px;border-radius:var(--radius);box-shadow:var(--shadow-xl);font-size:13px;min-width:260px;max-width:380px;animation:slideInRight .25s ease;display:flex;align-items:center;gap:10px;pointer-events:auto}
+.toast.ok{border-left-color:var(--ok)}
+.toast.err{border-left-color:var(--err)}
+.toast.warn{border-left-color:var(--warn)}
+.toast.info{border-left-color:var(--info)}
+.toast .icon{font-size:18px}
+.toast.ok .icon{color:var(--ok)}
+.toast.err .icon{color:var(--err)}
+.toast.warn .icon{color:var(--warn)}
+.toast.info .icon{color:var(--info)}
+@keyframes slideInRight{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:translateX(0)}}
+.toast.hide{animation:slideOutRight .25s ease forwards}
+@keyframes slideOutRight{to{opacity:0;transform:translateX(20px)}}
+
+/* ====== SPINNER ====== */
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading{display:flex;align-items:center;justify-content:center;padding:40px;gap:12px;color:var(--muted)}
+.loading .spinner{border-color:rgba(37,99,235,.2);border-top-color:var(--acc);width:24px;height:24px}
+
+.empty-state{padding:60px 20px;text-align:center;color:var(--muted)}
+.empty-state h3{margin:8px 0;color:var(--fg2);font-size:16px;font-weight:600}
+.empty-state .icon{font-size:48px;opacity:.4;margin-bottom:8px}
+.msg{color:var(--err);font-size:13px;margin:6px 0;padding:8px 12px;background:var(--err-bg);border-radius:6px}
+.muted{color:var(--muted);font-size:12px}
+.ok-text{color:var(--ok);font-size:13px}
+code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--acc2)}
+
+/* MKD table tags */
+.uk-pill{background:#ede9fe;color:#5b21b6;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:600}
+
+/* Mobile adjustments */
+@media(max-width:780px){
+  header{padding:0 12px;height:54px}
+  header h1{font-size:14px}
+  header .who{display:none}
+  .tabs{padding:0 8px;top:54px}
+  .tab{padding:12px 14px}
+  .bar{padding:10px 12px}
+  .wrap{padding:0 12px 20px}
+  table{min-width:600px}
+  .cnt{padding:8px 12px}
+  #mapCanvas{height:50vh;min-height:300px}
+}
+</style></head>
+<body>
+<header>
+  <h1><span class="logo">А</span><span class="title-text">НТО и МКД — Автодорожный округ</span></h1>
+  <span class="who" id="who"></span>
+  <button id="bMap"><span>🗺</span> Карта</button>
+  <button id="bOnline" style="display:none"><span>👥</span> Онлайн</button>
+  <button id="bLogin"><span>🔒</span> Войти</button>
+  <button id="bOut" style="display:none"><span>↪</span> Выйти</button>
+</header>
+
+<div class="tabs">
+  <div class="tab on" data-tab="nto"><span>🏪</span> НТО <span class="count" id="ntoCount">…</span></div>
+  <div class="tab" data-tab="mkd"><span>🏠</span> МКД <span class="count" id="mkdCount">…</span></div>
+</div>
+
+<!-- Вкладка НТО -->
+<div id="tab-nto">
+  <div class="bar">
+    <input class="grow" id="q" placeholder="🔍 Поиск: адрес, ФИО, ИНН, специализация, телефон, договор…">
+    <select id="fScheme">
+      <option value="">Все объекты</option>
+      <option value="1">В схеме</option>
+      <option value="0">Вне схемы</option>
+    </select>
+    <select id="fState">
+      <option value="">Любой договор</option>
+      <option>Действует</option><option>Истекает</option><option>Истёк</option>
+      <option>Расторгнут</option><option>На расторжение</option><option>Прекращён</option>
+      <option>Срок не указан</option><option>Нет договора</option>
+    </select>
+    <button id="bAdd" style="display:none"><span>+</span> Добавить НТО</button>
+    <a class="btn gray" href="/api/export.xlsx"><span>📊</span> Excel</a>
+    <button id="bJ" class="gray" style="display:none"><span>📜</span> Журнал</button>
+  </div>
+  <div class="cnt" id="cnt"></div>
+  <div class="wrap">
+    <table><thead><tr id="thead"></tr></thead><tbody id="tb"></tbody></table>
+    <div id="emptyState" class="empty-state" style="display:none">
+      <div class="icon">🔍</div>
+      <h3>Ничего не найдено</h3>
+      <p>Измените условия поиска или фильтры.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Вкладка МКД -->
+<div id="tab-mkd" style="display:none">
+  <div class="bar">
+    <input class="grow" id="mkd_q" placeholder="🔍 Адрес или УК, например: николаева 8 или строитель">
+    <select id="mkd_uk"><option value="">Все УК</option></select>
+    <select id="mkd_flt">
+      <option value="">Все дома</option>
+      <option value="with_uk">С УК</option>
+      <option value="no_uk">Без УК</option>
+      <option value="emergency">Аварийные</option>
+      <option value="auction">Аукцион</option>
+    </select>
+    <button id="bMkdAdd" style="display:none"><span>+</span> Добавить дом</button>
+    <button id="bMkdUk" style="display:none"><span>🏢</span> УК и контакты</button>
+    <button id="bMkdLog" class="gray" style="display:none"><span>📜</span> Журнал МКД</button>
+  </div>
+  <div class="cnt" id="mkd_cnt"></div>
+  <div class="wrap">
+    <table><thead><tr>
+      <th data-k="address">Адрес</th>
+      <th data-k="uk">УК</th>
+      <th data-k="year_built">Год</th>
+      <th data-k="floors">Эт.</th>
+      <th data-k="flats">Кв.</th>
+      <th></th>
+    </tr></thead><tbody id="mkd_tb"></tbody></table>
+    <div id="mkd_empty" class="empty-state" style="display:none">
+      <div class="icon">🏠</div>
+      <h3>Дома не найдены</h3>
+      <p>Измените условия поиска.</p>
+    </div>
+  </div>
+</div>
+
+<!-- Карточка НТО -->
+<div class="modal" id="mCard">
+  <div class="box">
+    <div class="box-h">
+      <h3 id="cardTitle"></h3>
+      <span id="cardState"></span>
+      <button class="close-btn" onclick="hide('mCard')">×</button>
+    </div>
+    <div class="box-b" id="card"></div>
+    <div class="box-f">
+      <button class="gray" onclick="hide('mCard')">Закрыть</button>
+      <button id="bSave" onclick="saveCard()">💾 Сохранить</button>
+      <button id="bDelete" class="red" onclick="delCard()" style="display:none">🗑 Удалить</button>
+    </div>
+  </div>
+</div>
+
+<!-- Вход -->
+<div class="modal" id="mLogin">
+  <div class="box" style="max-width:420px">
+    <div class="box-h"><h3>Вход для редактирования</h3><button class="close-btn" onclick="hide('mLogin')">×</button></div>
+    <div class="box-b">
+      <label>Ваше имя (попадёт в журнал изменений)</label>
+      <input id="lu" placeholder="например: Арсен или Елена" autocomplete="off">
+      <label style="margin-top:10px">Пароль</label>
+      <input id="lp" type="password" autocomplete="off">
+      <div class="msg" id="lm" style="display:none"></div>
+      <p class="muted" style="margin-top:14px">В config.json есть два пароля:<br>
+      <code>admin_password</code> — полный доступ (добавление, правка, удаление, журналы)<br>
+      <code>editor_password</code> — только добавление и правка.</p>
+    </div>
+    <div class="box-f">
+      <button class="gray" onclick="hide('mLogin')">Отмена</button>
+      <button onclick="doLogin()">Войти</button>
+    </div>
+  </div>
+</div>
+
+<!-- Журнал -->
+<div class="modal" id="mJ">
+  <div class="box" style="max-width:1300px">
+    <div class="box-h"><h3 id="jTitle">Журнал изменений</h3><button class="close-btn" onclick="hide('mJ')">×</button></div>
+    <div class="box-b"><div id="jb" style="overflow-x:auto"></div></div>
+    <div class="box-f"><button class="gray" onclick="hide('mJ')">Закрыть</button></div>
+  </div>
+</div>
+
+<!-- Онлайн -->
+<div class="modal" id="mOnline">
+  <div class="box" style="max-width:1000px">
+    <div class="box-h"><h3>Пользователи на сайте</h3><span id="onlineCnt" class="muted"></span><button class="close-btn" onclick="hide('mOnline')">×</button></div>
+    <div class="box-b"><div id="onlineBody"></div></div>
+    <div class="box-f"><button class="gray" onclick="hide('mOnline')">Закрыть</button></div>
+  </div>
+</div>
+
+<!-- Карта -->
+<div class="modal" id="mMap">
+  <div class="box" style="max-width:1200px">
+    <div class="box-h"><h3>Интерактивная карта — Автодорожный округ</h3><button class="close-btn" onclick="hide('mMap')">×</button></div>
+    <div class="box-b">
+      <div class="map-toolbar">
+        <span class="muted"><b>Режим:</b> <span id="mapMode">просмотр</span></span>
+        <span style="flex:1"></span>
+        <button id="bMapEdit" style="display:none">✏️ Редактировать</button>
+        <button id="bMapAddPt" class="green" style="display:none">➕ Добавить точку</button>
+        <button id="bMapDone" class="gray" style="display:none">✓ Готово</button>
+        <button id="bMapRefresh" class="gray">🔄 Обновить</button>
+      </div>
+      <div id="mapCanvas"></div>
+      <div class="map-legend">
+        <span><i style="background:#dc2626"></i>Красная</span>
+        <span><i style="background:#16a34a"></i>Зелёная</span>
+        <span><i style="background:#2563eb"></i>Синяя (НТО в схеме)</span>
+        <span><i style="background:#d97706"></i>Оранжевая (вне схемы)</span>
+        <span class="muted" style="margin-left:auto">Пунктир = тестовая точка</span>
+      </div>
+      <div id="mapInfo" class="map-info-panel">Выберите точку на карте.</div>
+    </div>
+    <div class="box-f"><button class="gray" onclick="hide('mMap')">Закрыть</button></div>
+  </div>
+</div>
+
+<!-- Универсальное модальное окно для МКД -->
+<div class="modal" id="mMkd1"><div class="box"><div class="box-h"><h3 id="mMkd1Title"></h3><button class="close-btn" onclick="hide('mMkd1')">×</button></div><div class="box-b" id="mMkd1Body"></div><div class="box-f" id="mMkd1Footer"><button class="gray" onclick="hide('mMkd1')">Закрыть</button></div></div></div>
+<div class="modal" id="mMkd2"><div class="box"><div class="box-h"><h3 id="mMkd2Title"></h3><button class="close-btn" onclick="hide('mMkd2')">×</button></div><div class="box-b" id="mMkd2Body"></div><div class="box-f" id="mMkd2Footer"><button class="gray" onclick="hide('mMkd2')">Закрыть</button></div></div></div>
+
+<!-- Уведомления -->
+<div id="toasts"></div>
+
+<script>
+/* ============================================================
+   Состояние приложения
+   ============================================================ */
+var ROLE=null, USER=null, DATA=[], SORT='scheme_num', DIR=1, CUR=null, ACTIVE_TAB='nto';
+var MAP=null, MAP_LAYERS={}, MAP_MARKERS=[], MAP_MODE='view', MAP_SELECTED=null, MAP_ADDING=false, MAP_EDIT_MARKER=null;
+var MKD_ALL=[], MKD_DATA=[], MKD_SORT=null, MKD_DIR=1, MKD_UKS=[], MKD_LOOKUPS={types:[],heating:[]};
+
+/* Колонки таблицы НТО */
+var COLS=[
+  ['scheme_num','№','tnum'],
+  ['in_scheme','Схема',''],
+  ['address','Адрес','taddr'],
+  ['specialization','Специализация','tspec'],
+  ['owner_name','Владелец / ФИО','tname'],
+  ['inn','ИНН','tinn'],
+  ['term_text','Срок',''],
+  ['state','Договор',''],
+  ['files','📄','tfiles']
+];
+
+/* Секции карточки НТО */
+var SECTIONS=[
+  {title:'Объект', icon:'🏪', fields:[
+    ['in_scheme','В схеме','sel',[['1','Да, в схеме'],['0','Нет, вне схемы']]],
+    ['scheme_num','№ в схеме','t'],
+    ['address','Адрес / местонахождение','ta'],
+    ['address_alt','Соседний адрес','ta'],
+    ['area','Площадь объекта','t'],
+    ['trade_area','Торговая площадь','t'],
+    ['obj_kind','Вид НТО','t'],
+    ['trade_type','Вид торговли','t'],
+    ['specialization','Специализация','ta'],
+    ['authority','Орган-собственник ЗУ','ta']
+  ]},
+  {title:'Контрагент', icon:'👤', fields:[
+    ['owner_name','ФИО / название','ta'],
+    ['inn','ИНН','t'],
+    ['ogrn','ОГРН / ОГРНИП','t'],
+    ['phone','Телефон','t'],
+    ['fns_status','Статус по ФНС','t'],
+    ['fns_date','Дата сверки с ФНС','d']
+  ]},
+  {title:'Договор и срок', icon:'📋', fields:[
+    ['term_text','Срок размещения','ta'],
+    ['term_start','Начало срока','d'],
+    ['term_end','Конец срока','d'],
+    ['conditions','Условия / номер договора','ta'],
+    ['notes','Примечания','ta'],
+    ['contract_state','Состояние вручную','t']
+  ]},
+  {title:'Проверка / ревизия', icon:'🔍', fields:[
+    ['chk_contract','Договор (проверка)','t'],
+    ['chk_kkt','Проверка ККТ','t'],
+    ['chk_match','Соответствие заявленного вида','t'],
+    ['chk_compare','Сличение','t'],
+    ['chk_kupavy','Купавы','t'],
+    ['comment','Комментарий ревизии','ta']
+  ]},
+  {title:'Координаты и карта', icon:'📍', fields:[
+    ['map_url','Ссылка на карту','t'],
+    ['lat','Широта','n'],
+    ['lon','Долгота','n'],
+    ['src','Источник данных','t']
+  ]}
+];
+
+/* Маски ввода */
+var MASKS={
+  inn:{inputmode:'numeric',maxlength:'12',placeholder:'10 цифр (ООО) или 12 (ИП)'},
+  ogrn:{inputmode:'numeric',maxlength:'15',placeholder:'13 цифр (ООО) или 15 (ИП)'},
+  phone:{inputmode:'tel',placeholder:'+7 (XXX) XXX-XX-XX',oninput:'maskPhone(this)'},
+  lat:{inputmode:'decimal',placeholder:'напр. 62.0315',step:'0.000001'},
+  lon:{inputmode:'decimal',placeholder:'напр. 129.7338',step:'0.000001'},
+  scheme_num:{inputmode:'numeric',maxlength:'5',placeholder:'напр. 12'},
+  term_start:{inputmode:'numeric',placeholder:'ДД.ММ.ГГГГ',oninput:'maskDate(this)'},
+  term_end:{inputmode:'numeric',placeholder:'ДД.ММ.ГГГГ',oninput:'maskDate(this)'},
+  fns_date:{inputmode:'numeric',placeholder:'ДД.ММ.ГГГГ',oninput:'maskDate(this)'}
+};
+
+/* ============================================================
+   Утилиты
+   ============================================================ */
+function $(i){return document.getElementById(i)}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+function show(i){$(i).classList.add('show')}
+function hide(i){$(i).classList.remove('show')}
+function fmtDate(v){
+  if(!v)return '';
+  if(typeof v==='string'){var m=v.match(/^(\d{4})-(\d{2})-(\d{2})/);if(m)return m[3]+'.'+m[2]+'.'+m[1];return v;}
+  if(v instanceof Date){var d=v.getDate(),mo=v.getMonth()+1,y=v.getFullYear();return (d<10?'0':'')+d+'.'+(mo<10?'0':'')+mo+'.'+y;}
+  return String(v);
+}
+function api(m,u,body,cb,isForm){
+  var x=new XMLHttpRequest();x.open(m,u);
+  if(body&&!isForm)x.setRequestHeader('Content-Type','application/json');
+  x.onload=function(){var r={};try{r=JSON.parse(x.responseText)}catch(e){}cb(x.status,r)};
+  x.onerror=function(){cb(0,{error:'Нет связи с сервером.'})};
+  x.send(body?(isForm?body:JSON.stringify(body)):null);
+}
+
+/* Toast-уведомления */
+function toast(msg, type){
+  type = type || 'info';
+  var icons = {ok:'✓', err:'✕', warn:'⚠', info:'ℹ'};
+  var el = document.createElement('div');
+  el.className = 'toast ' + type;
+  el.innerHTML = '<span class="icon">'+icons[type]+'</span><span>'+esc(msg)+'</span>';
+  $('toasts').appendChild(el);
+  setTimeout(function(){
+    el.classList.add('hide');
+    setTimeout(function(){el.remove();}, 300);
+  }, 3500);
+}
+
+/* Маска телефона */
+function maskPhone(el){
+  var v=el.value.replace(/\D/g,'');
+  if(v.indexOf('8')===0)v='7'+v.slice(1);
+  if(v.length>0&&v.indexOf('7')!==0)v='7'+v;
+  v=v.slice(0,11);
+  var f='';
+  if(v.length>0)f='+7';
+  if(v.length>1)f+=' ('+v.slice(1,4);
+  if(v.length>=4)f+=')';
+  if(v.length>=5)f+=' '+v.slice(4,7);
+  if(v.length>=7)f+='-'+v.slice(7,9);
+  if(v.length>=9)f+='-'+v.slice(9,11);
+  el.value=f;
+}
+
+/* Маска даты: 11122025 → 11.12.2025, с автопереходом и автозаполнением срока */
+function maskDate(el){
+  var digits=el.value.replace(/\D/g,'').slice(0,8);var out='';
+  for(var i=0;i<digits.length;i++){if(i===2||i===4)out+='.';out+=digits[i];}
+  el.value=out;
+  if(typeof el.selectionStart!=='undefined'){el.selectionStart=el.selectionEnd=out.length;}
+  if(digits.length===8){
+    if(el.id==='f_term_start'){
+      var next=document.getElementById('f_term_end');
+      if(next){setTimeout(function(){next.focus();},0);}
+    } else if(el.id==='f_term_end'){
+      var t=document.getElementById('f_term_text');
+      if(t){setTimeout(function(){t.focus();},0);}
+    }
+  }
+  if(el.id==='f_term_start'||el.id==='f_term_end'){updateTermText();}
+}
+function updateTermText(){
+  var s=document.getElementById('f_term_start');
+  var e=document.getElementById('f_term_end');
+  var t=document.getElementById('f_term_text');
+  if(!s||!e||!t)return;
+  var sv=s.value.trim(), ev=e.value.trim();
+  var okS=/^\d{2}\.\d{2}\.\d{4}$/.test(sv);
+  var okE=/^\d{2}\.\d{2}\.\d{4}$/.test(ev);
+  if(okS&&okE){t.value=sv+' – '+ev;}
+  else if(okS){t.value=sv;}
+  else if(okE){t.value=ev;}
+}
+
+/* ============================================================
+   Роли и вход
+   ============================================================ */
+function setRole(r,u){
+  ROLE=r;USER=u;
+  $('who').innerHTML = u ? '<span class="dot"></span>'+esc(u)+' ('+r+')' : '';
+  $('bLogin').style.display=r?'none':'';
+  $('bOut').style.display=r?'':'none';
+  $('bAdd').style.display=r?'':'none';
+  $('bJ').style.display=(r==='admin')?'':'none';
+  $('bOnline').style.display=(r==='admin')?'':'none';
+  $('bMapEdit').style.display=r?'':'none';
+  $('bMkdAdd').style.display=r?'':'none';
+  $('bMkdUk').style.display=r?'':'none';
+  $('bMkdLog').style.display=(r==='admin')?'':'none';
+}
+function doLogin(){
+  $('lm').style.display='none';
+  var name=$('lu').value.trim();
+  if(!name){$('lm').textContent='Впишите ваше имя.';$('lm').style.display='block';return;}
+  api('POST','/api/login',{name:name,password:$('lp').value},function(s,r){
+    if(s!==200){$('lm').textContent=r.error||'Ошибка входа.';$('lm').style.display='block';return;}
+    hide('mLogin');setRole(r.role,r.name);load();toast('Добро пожаловать, '+r.name+'!', 'ok');
+  });
+}
+function logout(){api('POST','/api/logout',{},function(){setRole(null,null);load();toast('Вы вышли из системы.', 'info');});}
+
+/* ============================================================
+   Вкладки
+   ============================================================ */
+function switchTab(t){
+  ACTIVE_TAB=t;
+  document.querySelectorAll('.tab').forEach(function(el){el.classList.toggle('on', el.getAttribute('data-tab')===t);});
+  $('tab-nto').style.display = (t==='nto')?'':'none';
+  $('tab-mkd').style.display = (t==='mkd')?'':'none';
+  if(t==='mkd')loadMkd();
+}
+document.querySelectorAll('.tab').forEach(function(el){el.onclick=function(){switchTab(el.getAttribute('data-tab'));};});
+
+/* ============================================================
+   НТО: список
+   ============================================================ */
+function load(){
+  var p='?q='+encodeURIComponent($('q').value)+'&scheme='+$('fScheme').value+'&state='+encodeURIComponent($('fState').value);
+  api('GET','/api/nto'+p,null,function(s,d){
+    if(s!==200){$('cnt').textContent='Ошибка: '+(d.error||s);return;}
+    DATA=d;draw();
+  });
+}
+function key(o,k){
+  var v=o[k];
+  if(k==='scheme_num'){var n=parseInt(v,10);return (o.in_scheme?0:1000000)+(isNaN(n)?999999:n);}
+  if(k==='files'||k==='in_scheme')return v||0;
+  if(k==='inn')return parseInt((v||'').replace(/\D/g,''),10)||0;
+  return String(v||'').toLowerCase();
+}
+function draw(){
+  var h='';
+  for(var i=0;i<COLS.length;i++){
+    var c=COLS[i];
+    h+='<th onclick="sortBy(\''+c[0]+'\')">'+c[1]+(SORT===c[0]?' <span style="color:var(--acc)">'+(DIR>0?'▲':'▼')+'</span>':'')+'</th>';
+  }
+  $('thead').innerHTML=h;
+  DATA.sort(function(a,b){var x=key(a,SORT),y=key(b,SORT);return (x<y?-1:x>y?1:0)*DIR;});
+  var t='';
+  for(var i=0;i<DATA.length;i++){
+    var o=DATA[i];
+    var sc=o.scheme_num?esc(o.scheme_num):'<span class="muted">—</span>';
+    var tag=o.in_scheme?'<span class="tag-in">схема</span>':'<span class="tag-out">вне</span>';
+    var addr=o.address?esc(o.address):'<span class="muted">адрес не указан</span>';
+    if(o.map_url&&!o.address)addr='<a href="'+esc(o.map_url)+'" target="_blank" onclick="event.stopPropagation()">ссылка</a>';
+    var stateBadge='<span class="badge b-'+o.state.split(' ')[0]+'">'+esc(o.state)+'</span>';
+    var files=o.files?('📄 '+o.files):'<span class="muted">—</span>';
+    t+='<tr class="row" onclick="openCard('+o.id+')"><td class="tnum">'+sc+'</td><td>'+tag+'</td><td class="taddr">'+addr+'</td><td class="tspec">'+esc(o.specialization||'—')+'</td><td class="tname">'+esc(o.owner_name||'—')+'</td><td class="tinn">'+esc(o.inn||'—')+'</td><td>'+esc(o.term_text||'—')+'</td><td>'+stateBadge+'</td><td class="tfiles">'+files+'</td></tr>';
+  }
+  $('tb').innerHTML=t;
+  var inS=DATA.filter(function(o){return o.in_scheme}).length;
+  $('cnt').innerHTML='Найдено: <b>'+DATA.length+'</b> из <b>'+DATA.length+'</b> · в схеме: <b>'+inS+'</b> · вне схемы: <b>'+(DATA.length-inS)+'</b>';
+  $('ntoCount').textContent=DATA.length;
+  $('emptyState').style.display=DATA.length?'none':'block';
+}
+function sortBy(k){if(SORT===k)DIR=-DIR;else{SORT=k;DIR=1}draw();}
+
+/* ============================================================
+   НТО: карточка
+   ============================================================ */
+function openCard(id){api('GET','/api/nto/'+id,null,function(s,o){if(s!==200){toast('Не удалось открыть: '+(o.error||s),'err');return;}CUR=o;renderCard(o);});}
+function renderCard(o){
+  var ed=!!ROLE;
+  $('cardTitle').innerHTML=(o.id?('НТО № '+(o.scheme_num||'—')+(o.in_scheme?' <span class="tag-in">в схеме</span>':' <span class="tag-out">вне схемы</span>')):'Новый НТО');
+  $('cardState').innerHTML='<span class="badge b-'+(o.state||'Нет').split(' ')[0]+'">'+esc(o.state||'—')+'</span>';
+  var h='<div class="state-box"><span class="lbl">Состояние договора:</span><span class="val">'+esc(o.state||'—')+'</span><span class="hint">считается автоматически по сроку и примечаниям</span></div>';
+  for(var si=0;si<SECTIONS.length;si++){
+    var sec=SECTIONS[si];
+    h+='<div class="section"><h4><span class="sec-icon">'+sec.icon+'</span>'+sec.title+'</h4><div class="body">';
+    for(var fi=0;fi<sec.fields.length;fi++){
+      var f=sec.fields[fi];var k=f[0],lbl=f[1],type=f[2];
+      var v=o[k]==null?'':o[k];
+      if(type==='d')v=fmtDate(v);
+      h+='<div class="field"><label>'+lbl+'</label>';
+      if(!ed){
+        var shown=String(v);
+        if(shown==='')shown='<span class="val empty">— не заполнено —</span>';
+        else if(k==='map_url'&&shown)shown='<a href="'+esc(shown)+'" target="_blank">'+esc(shown)+'</a>';
+        else if(k==='inn'&&shown)shown='<a href="https://www.rusprofile.ru/search?query='+esc(shown)+'" target="_blank">'+esc(shown)+'</a>';
+        else if(k==='phone')shown='<a href="tel:'+esc(shown.replace(/[^0-9+]/g,''))+'">'+esc(shown)+'</a>';
+        else shown='<span class="val">'+esc(v)+'</span>';
+        h+='<div class="val '+(v===''?'empty':'')+'">'+shown+'</div>';
+      }else{
+        var id='f_'+k;var mask=MASKS[k]||{};var attrs='';
+        if(mask.inputmode)attrs+=' inputmode="'+mask.inputmode+'"';
+        if(mask.maxlength)attrs+=' maxlength="'+mask.maxlength+'"';
+        if(mask.placeholder)attrs+=' placeholder="'+esc(mask.placeholder)+'"';
+        if(mask.step)attrs+=' step="'+mask.step+'"';
+        if(mask.oninput)attrs+=' oninput="'+mask.oninput+'"';
+        if(type==='sel'){var opts=f[3];h+='<select id="'+id+'">';for(var oi=0;oi<opts.length;oi++)h+='<option value="'+opts[oi][0]+'"'+(String(v)===opts[oi][0]?' selected':'')+'>'+opts[oi][1]+'</option>';h+='</select>';
+        }else if(type==='ta'){h+='<textarea id="'+id+'" rows="2"'+(mask.placeholder?' placeholder="'+esc(mask.placeholder)+'"':'')+'>'+esc(v)+'</textarea>';
+        }else if(type==='d'){h+='<input id="'+id+'" value="'+esc(v)+'" placeholder="ДД.ММ.ГГГГ" inputmode="numeric" oninput="maskDate(this)">';
+        }else{h+='<input id="'+id+'" value="'+esc(v)+'"'+attrs+'>';}
+      }
+      h+='</div>';
+    }
+    h+='</div></div>';
+  }
+  if(o.inn){
+    h+='<div class="section"><h4><span class="sec-icon">🔎</span>Проверка по ИНН</h4><div class="body"><div class="field full"><label>Внешние сервисы</label><div class="val">'+
+       '<a target="_blank" href="https://www.rusprofile.ru/search?query='+esc(o.inn)+'">Rusprofile</a> · '+
+       '<a target="_blank" href="https://egrul.nalog.ru/index.html">ЕГРЮЛ/ЕГРИП (ФНС)</a></div></div></div></div>';
+  }
+  if(o.id){
+    h+='<div class="section"><h4><span class="sec-icon">📎</span>Фото и документы</h4><div class="body"><div class="full">';
+    var fl=o.file_list||[];var total=o.file_count_total||fl.length;
+    var photos=[],docs=[];
+    for(var i=0;i<fl.length;i++){if(fl[i].is_photo)photos.push(fl[i]);else docs.push(fl[i]);}
+    if(photos.length>0){
+      h+='<div class="files">';
+      for(var i=0;i<photos.length;i++){var f=photos[i];h+='<div class="file-item"><a href="/api/files/'+f.id+'" target="_blank"><img src="/api/files/'+f.id+'"></a><div class="nm"><a href="/api/files/'+f.id+'" target="_blank">'+esc(f.file_name)+'</a></div><div class="cap">'+esc(f.caption||'')+'</div>'+(ROLE?'<button class="red" onclick="delFile('+f.id+')">Удалить</button>':'')+'</div>';}
+      h+='</div>';
+    }
+    if(ROLE){
+      if(docs.length>0){
+        h+='<h4 style="margin:14px 0 8px;font-size:12px;color:var(--fg2);text-transform:uppercase;letter-spacing:.05em">Документы ('+docs.length+')</h4><div class="files">';
+        for(var i=0;i<docs.length;i++){var f=docs[i];h+='<div class="file-item"><div class="nm"><a href="/api/files/'+f.id+'" target="_blank">'+esc(f.file_name)+'</a></div><div class="cap">'+esc(f.caption||'')+'</div><button class="red" onclick="delFile('+f.id+')">Удалить</button></div>';}
+        h+='</div>';
+      }
+      h+='<div class="field" style="margin-top:14px"><label>Загрузить файл (до 30 МБ)</label><input type="file" id="upf"></div><div class="field"><label>Подпись к файлу</label><input id="upc" placeholder="например: Фасад с ул. Ленина, июль 2026"></div><div class="full"><button onclick="upload()">Загрузить</button></div>';
+      if(total===0)h+='<p class="muted" style="margin-top:8px">Файлов нет. Загрузите первое фото — оно будет видно всем без входа.</p>';
+    }else{
+      if(total>photos.length)h+='<p class="muted" style="margin-top:10px">Документы видны только после входа.</p>';
+      if(total===0)h+='<p class="muted">Файлов нет. Чтобы загрузить — войдите.</p>';
+    }
+    h+='</div></div></div>';
+  }else{
+    h+='<div class="section"><h4><span class="sec-icon">📎</span>Фото и документы</h4><div class="body"><div class="full"><p class="muted">Сначала сохраните новый НТО. После этого откройте карточку снова.</p></div></div></div>';
+  }
+  h+='<div class="msg" id="cm" style="display:none"></div>';
+  $('card').innerHTML=h;
+  $('bSave').style.display=ed?'':'none';
+  $('bDelete').style.display=(ROLE==='admin'&&o.id)?'':'none';
+  show('mCard');
+}
+function collect(){var d={};for(var si=0;si<SECTIONS.length;si++){for(var fi=0;fi<SECTIONS[si].fields.length;fi++){var f=SECTIONS[si].fields[fi],k=f[0];var el=$('f_'+k);if(el)d[k]=el.value;}}return d;}
+function saveCard(){
+  var d=collect(),id=CUR&&CUR.id;
+  $('cm').style.display='none';
+  api(id?'PUT':'POST',id?'/api/nto/'+id:'/api/nto',d,function(s,r){
+    if(s!==200){$('cm').textContent=r.error||'Ошибка при сохранении.';$('cm').style.display='block';return;}
+    hide('mCard');load();toast(id?'Сохранено ✓':'НТО добавлено ✓','ok');
+  });
+}
+function delCard(){
+  if(!confirm('Удалить этот НТО? Снимок записи сохранится в журнале.'))return;
+  api('DELETE','/api/nto/'+CUR.id,null,function(s,r){
+    if(s!==200){toast(r.error||'Ошибка при удалении.','err');return;}
+    hide('mCard');load();toast('НТО удалён','info');
+  });
+}
+function upload(){
+  var f=$('upf').files[0];
+  if(!f){toast('Сначала выберите файл.','warn');return;}
+  var fd=new FormData();fd.append('file',f);fd.append('caption',$('upc').value);
+  api('POST','/api/nto/'+CUR.id+'/files',fd,function(s,r){
+    if(s!==200){toast(r.error||'Ошибка загрузки файла.','err');return;}
+    openCard(CUR.id);load();toast('Файл загружен ✓','ok');
+  },true);
+}
+function delFile(fid){
+  if(!confirm('Удалить файл? Он будет перенесён в _удалённые.'))return;
+  api('DELETE','/api/files/'+fid,null,function(){openCard(CUR.id);load();toast('Файл удалён','info');});
+}
+
+/* ============================================================
+   Журнал НТО
+   ============================================================ */
+function showJournal(){
+  $('jTitle').textContent='Журнал изменений НТО';
+  api('GET','/api/journal',null,function(s,r){
+    if(s!==200){toast('Ошибка журнала: '+(r&&r.error||s),'err');return;}
+    var h='<table class="jtable"><thead><tr><th>Когда</th><th>Кто</th><th>Компьютер</th><th>IP</th><th>Действие</th><th>НТО №</th><th>Было</th><th>Стало</th></tr></thead><tbody>';
+    for(var i=0;i<r.length;i++){var x=r[i];
+      h+='<tr><td>'+esc(x.at)+'</td><td><b>'+esc(x.user_name||'')+'</b></td><td>'+esc(x.host_name||'—')+'</td><td>'+esc(x.host_ip||'—')+'</td><td>'+esc(x.action)+'</td><td>'+(x.object_id||'')+'</td><td class="vv">'+esc(x.before_val||'')+'</td><td class="vv">'+esc(x.after_val||'')+'</td></tr>';
+    }
+    h+='</tbody></table>';
+    if(!r.length)h='<div class="empty-state"><div class="icon">📜</div><h3>Журнал пуст</h3><p>Изменений ещё не было.</p></div>';
+    $('jb').innerHTML=h;show('mJ');
+  });
+}
+
+/* ============================================================
+   Онлайн-пользователи
+   ============================================================ */
+function showOnline(){renderOnline();show('mOnline');if(window._onlineTimer)clearInterval(window._onlineTimer);window._onlineTimer=setInterval(function(){if($('mOnline').classList.contains('show'))renderOnline();else clearInterval(window._onlineTimer);},5000);}
+function renderOnline(){
+  api('GET','/api/online',null,function(s,r){
+    if(s!==200){$('onlineBody').innerHTML='<p class="msg">'+(r&&r.error||'Ошибка')+'</p>';return;}
+    if(!r.length){$('onlineBody').innerHTML='<div class="empty-state"><div class="icon">👥</div><h3>Сейчас на сайте никого нет</h3></div>';$('onlineCnt').textContent='';return;}
+    var h='<table class="online-table"><thead><tr><th>Статус</th><th>Пользователь</th><th>Компьютер</th><th>IP</th><th>Страница</th><th>Был активен</th><th>Сессия</th></tr></thead><tbody>';
+    for(var i=0;i<r.length;i++){var x=r[i];
+      var cls=x.active?'dot-on':'dot-off';var status=x.active?'активен':'бездействует';
+      h+='<tr><td><span class="'+cls+'"></span>'+status+'</td><td><b>'+esc(x.user||'(аноним)')+'</b></td><td>'+esc(x.host||'—')+'</td><td>'+esc(x.ip||'—')+'</td><td>'+esc(x.page||'—')+'</td><td>'+x.seconds_ago+' сек назад</td><td>'+Math.floor(x.session_seconds/60)+' мин</td></tr>';
+    }
+    h+='</tbody></table><p class="muted" style="margin-top:10px">Активным считается пользователь за последние 60 секунд. Через 5 минут бездействия запись удаляется.</p>';
+    $('onlineBody').innerHTML=h;$('onlineCnt').textContent='('+r.length+')';
+  });
+}
+
+/* ============================================================
+   КАРТА — Leaflet + OpenStreetMap (бесплатно, без API-ключа)
+   ============================================================ */
+function showMap(){
+  show('mMap');
+  if(!MAP)initMap(); else setTimeout(function(){MAP.invalidateSize();loadMapMarkers();},100);
+}
+function initMap(){
+  MAP=L.map('mapCanvas',{zoomControl:true,attributionControl:false}).setView([62.0315,129.7338],12);
+  L.control.attribution({prefix:false}).addTo(MAP);
+  // Главный слой — OpenStreetMap (бесплатно)
+  MAP_LAYERS.osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19, attribution:'© OpenStreetMap contributors'
+  }).addTo(MAP);
+  // Альтернативный слой — спутник Esri (тоже бесплатно)
+  MAP_LAYERS.sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    maxZoom:19, attribution:'© Esri'
+  });
+  // Слой с подписями улиц поверх спутника
+  MAP_LAYERS.labels=L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',{
+    maxZoom:19, attribution:'© CARTO'
+  });
+  // Переключатель слоёв
+  L.control.layers({
+    'Карта (OSM)':MAP_LAYERS.osm,
+    'Спутник (Esri)':MAP_LAYERS.sat
+  }).addTo(MAP);
+  // Обработка клика по карте (для добавления новой точки)
+  MAP.on('click', function(e){
+    if(MAP_ADDING){
+      var label=prompt('Подпись точки (или пусто):','')||'';
+      var color=prompt('Цвет (red/green/blue/orange):','red')||'red';
+      var desc=prompt('Описание (или пусто):','')||'';
+      api('POST','/api/map_points',{lat:e.latlng.lat,lon:e.latlng.lng,label:label,color:color,object_type:'nto',description:desc},function(s,r){
+        if(s!==200){toast('Не удалось добавить точку: '+(r&&r.error||s),'err');return;}
+        MAP_ADDING=false;$('mapMode').textContent='просмотр';
+        $('bMapAddPt').style.display=(ROLE?'':'none');
+        toast('Точка добавлена ✓','ok');
+        loadMapMarkers();
+      });
+    }
+  });
+  loadMapMarkers();
+}
+function loadMapMarkers(){
+  api('GET','/api/map_markers',null,function(s,r){
+    if(s!==200)return;
+    // очистим старые маркеры
+    if(MAP_MARKERS.length){
+      for(var i=0;i<MAP_MARKERS.length;i++)MAP.removeLayer(MAP_MARKERS[i]);
+      MAP_MARKERS=[];
+    }
+    MAP_SELECTED=null;
+    for(var i=0;i<r.length;i++){
+      var m=r[i];
+      var color=m.color||'red';
+      var cssColor=color==='red'?'#dc2626':(color==='green'?'#16a34a':(color==='blue'?'#2563eb':(color==='orange'?'#d97706':color)));
+      var icon=L.divIcon({
+        className:'custom-marker'+(m.is_test?' test':''),
+        html:'<div class="pin" style="background:'+cssColor+'"></div>',
+        iconSize:[28,28], iconAnchor:[14,28], popupAnchor:[0,-28]
+      });
+      var marker=L.marker([m.lat,m.lon],{icon:icon,draggable:false}).addTo(MAP);
+      marker._pointData=m;
+      var popHtml='<b>'+esc(m.label||('точка #'+m.id))+'</b>';
+      if(m.description)popHtml+='<br>'+esc(m.description).replace(/\n/g,'<br>');
+      popHtml+='<br><span class="muted">тип: '+esc(m.object_type||'nto')+' · '+(m.is_test?'тестовая':'обычная')+'</span>';
+      popHtml+='<div class="pop-actions">';
+      if(m.object_id&&m.source==='nto'){popHtml+='<button onclick="hide(\'mMap\');openCard('+m.object_id+')">Открыть НТО</button>';}
+      if(ROLE==='admin'||ROLE==='editor'){popHtml+='<button class="gray" onclick="editMapPoint('+m.id+')">Изменить</button>';}
+      if(ROLE==='admin'){popHtml+='<button class="red" onclick="delMapPoint('+m.id+')">Удалить</button>';}
+      popHtml+='</div>';
+      marker.bindPopup(popHtml);
+      marker.on('click',function(e){
+        var p=e.target._pointData;
+        MAP_SELECTED=p.id;
+        showMapInfo(p);
+      });
+      MAP_MARKERS.push(marker);
+    }
+    if(!r.length)$('mapInfo').innerHTML='<b>Маркеров нет.</b> '+(ROLE?'Нажмите «Добавить точку» и кликните на карте.':'Войдите как редактор, чтобы добавлять точки.');
+  });
+}
+function showMapInfo(p){
+  var html='<b>'+(p.label||('точка #'+p.id))+'</b>';
+  if(p.description)html+='<br>'+esc(p.description).replace(/\n/g,'<br>');
+  html+='<br><span class="muted">координаты: '+p.lat.toFixed(6)+', '+p.lon.toFixed(6)+'</span>';
+  if(p.is_test)html+=' <span class="badge b-Нет">тестовая</span>';
+  if(p.object_id&&p.source==='nto')html+='<br><button onclick="hide(\'mMap\');openCard('+p.object_id+')" style="margin-top:6px">Открыть карточку НТО №'+p.object_id+'</button>';
+  $('mapInfo').innerHTML=html;
+}
+function editMapPoint(id){
+  // Найдём данные точки в загруженных маркерах
+  var p=null;
+  for(var i=0;i<MAP_MARKERS.length;i++){
+    if(MAP_MARKERS[i]._pointData.id===id&&MAP_MARKERS[i]._pointData.source==='custom'){p=MAP_MARKERS[i]._pointData;break;}
+  }
+  if(!p){toast('Точка не найдена.','err');return;}
+  var label=prompt('Подпись:',p.label||'')||'';
+  var color=prompt('Цвет (red/green/blue/orange):',p.color||'red')||'red';
+  var desc=prompt('Описание:',p.description||'')||'';
+  var oidStr=prompt('Привязать к НТО (id, или пусто):',p.object_id||'');
+  var oid=oidStr?parseInt(oidStr,10):null;
+  api('PUT','/api/map_points/'+id,{label:label,color:color,description:desc,object_id:oid},function(s,r){
+    if(s!==200){toast('Ошибка: '+(r&&r.error||s),'err');return;}
+    toast('Точка изменена ✓','ok');
+    loadMapMarkers();
+  });
+}
+function delMapPoint(id){
+  if(!confirm('Удалить точку #'+id+'?'))return;
+  api('DELETE','/api/map_points/'+id,null,function(s,r){
+    if(s!==200){toast('Ошибка: '+(r&&r.error||s),'err');return;}
+    toast('Точка удалена','info');
+    loadMapMarkers();
+  });
+}
+
+/* ============================================================
+   МКД: список
+   ============================================================ */
+function loadMkd(){
+  api('GET','/api/mkd/all',null,function(s,d){
+    if(s!==200){$('mkd_cnt').textContent='Ошибка: '+(d&&d.error||s);return;}
+    MKD_ALL=d;mkdFilter();$('mkdCount').textContent=d.length;
+  });
+  api('GET','/api/mkd/uks',null,function(s,d){
+    if(s===200){MKD_UKS=d;var cur=$('mkd_uk').value;$('mkd_uk').innerHTML='<option value="">Все УК</option>'+d.map(function(u){return '<option value="'+u.id+'">'+esc(u.name)+'</option>';}).join('');$('mkd_uk').value=cur;}
+  });
+  api('GET','/api/mkd/lookups',null,function(s,d){if(s===200)MKD_LOOKUPS=d;});
+}
+function mkdFilter(){
+  var words=$('mkd_q').value.toLowerCase().split(/\s+/).filter(Boolean);
+  var uk=$('mkd_uk').value,f=$('mkd_flt').value;
+  MKD_DATA=MKD_ALL.filter(function(h){
+    var hay=((h.address||'')+' '+(h.uk||'')).toLowerCase();
+    for(var i=0;i<words.length;i++)if(hay.indexOf(words[i])<0)return false;
+    if(uk&&String(h.uk_id)!==uk)return false;
+    if(f==='emergency'&&!h.emergency)return false;
+    if(f==='no_uk'&&!h.no_uk)return false;
+    if(f==='auction'&&!h.auction)return false;
+    if(f==='with_uk'&&!h.uk)return false;
+    return true;
+  });
+  mkdRender();
+}
+function mkdRender(){
+  var d=MKD_DATA.slice();
+  if(MKD_SORT)d.sort(function(a,b){var x=a[MKD_SORT],y=b[MKD_SORT];return String(x||'').localeCompare(String(y||''),'ru',{numeric:true})*MKD_DIR;});
+  $('mkd_cnt').innerHTML='Найдено: <b>'+d.length+'</b> из <b>'+MKD_ALL.length+'</b>';
+  var h='';
+  for(var i=0;i<d.length;i++){
+    var o=d[i];
+    var tags='';
+    if(o.emergency)tags+='<span class="tag-em">аварийный</span> ';
+    if(o.no_uk)tags+='<span class="tag-nouk">без УК</span>';
+    h+='<tr class="row" onclick="mkdHouse('+o.id+')"><td><b>'+esc(o.address)+'</b></td><td>'+(esc(o.uk)||'<span class="muted">—</span>')+'</td><td>'+esc(o.year_built||'—')+'</td><td>'+esc(o.floors||'—')+'</td><td>'+esc(o.flats||'—')+'</td><td>'+tags+'</td></tr>';
+  }
+  $('mkd_tb').innerHTML=h;
+  $('mkd_empty').style.display=d.length?'none':'block';
+}
+function mkdSort(k){if(MKD_SORT===k)MKD_DIR=-MKD_DIR;else{MKD_SORT=k;MKD_DIR=1}mkdRender();}
+document.querySelectorAll('#tab-mkd th[data-k]').forEach(function(th){th.onclick=function(){mkdSort(th.dataset.k);};});
+
+/* ============================================================
+   МКД: карточка дома
+   ============================================================ */
+function mkdHouse(id){
+  api('GET','/api/mkd/house/'+id,null,function(s,h){
+    if(s!==200){toast('Ошибка: '+(h&&h.error||s),'err');return;}
+    var html='<h3 style="margin-top:0">🏠 '+esc(h.address)+'</h3>';
+    html+='<div class="kv">'+kv('УК',h.uk)+kv('Тип дома',h.house_type)+kv('Отопление',h.heating)+kv('Источник тепла',h.heat_source)+kv('Система отопления',h.heat_system)+kv('Поставщик тепла',h.heat_supplier)+kv('Обслуживает',h.service_org)+kv('Год постройки',h.year_built)+kv('Этажей',h.floors)+kv('Квартир',h.flats)+kv('Материал стен',h.wall)+kv('Мун. жильё, %',h.municipal_percent)+kv('Мун. (примечание)',h.municipal_note)+kv('Аварийный',h.emergency?'<span class="badge b-Истёк">да</span>':'нет')+kv('Аукцион',h.auction?'<span class="badge b-Истекает">да</span>':'нет')+kv('Примечание',h.note)+'</div>';
+    if(h.registry_info){
+      html+='<div class="section"><h4><span class="sec-icon">📋</span>Реестр МКД с УК</h4><div class="body"><div class="full"><div class="kv">'+kv('Помещений',h.registry_info.premises)+kv('Последний капремонт',h.registry_info.cap_repair)+kv('Тех. состояние',h.registry_info.tech_state)+kv('Договор: начало',h.registry_info.contract_start)+kv('Договор: конец',h.registry_info.contract_end)+kv('Неисправности',h.registry_info.faults)+kv('Примечание',h.registry_info.reg_note)+kv('Источник',h.registry_info.source)+'</div></div></div></div>';
+    } else if(h.registry_info_missing){
+      html+='<div class="section"><h4><span class="sec-icon">📋</span>Реестр МКД с УК</h4><div class="body"><div class="full"><p class="muted">В базе AvtodorDB нет таблицы <code>HouseRegistryInfo</code>. Раздел недоступен.</p></div></div></div>';
+    }
+    if(h.emergency_info){
+      html+='<div class="section"><h4><span class="sec-icon">⚠️</span>Аварийность</h4><div class="body"><div class="full"><div class="kv">'+kv('Квартал',h.emergency_info.quarter)+kv('Жильцов',h.emergency_info.residents)+kv('Площадь, м²',h.emergency_info.area)+kv('Акт',h.emergency_info.act)+'</div></div></div></div>';
+    } else if(h.emergency_info_missing){
+      html+='<div class="section"><h4><span class="sec-icon">⚠️</span>Аварийность</h4><div class="body"><div class="full"><p class="muted">В базе нет таблицы <code>HouseEmergency</code>.</p></div></div></div>';
+    }
+    if(h.no_uk_info){
+      html+='<div class="section"><h4><span class="sec-icon">🚫</span>Дом без УК</h4><div class="body"><div class="full"><div class="kv">'+kv('Приказ',h.no_uk_info.order_text)+kv('Вид',h.no_uk_info.kind)+kv('По ЕГРН',h.no_uk_info.egrn)+kv('Статус',h.no_uk_info.status)+kv('Мун. кв.',h.no_uk_info.municipal)+kv('Отказ УК',h.no_uk_info.refused_by)+kv('Тип по ГИС',h.no_uk_info.gis_type)+kv('РОА',h.no_uk_info.roa)+kv('Программа',h.no_uk_info.program)+kv('Сроки',h.no_uk_info.deadline)+'</div></div></div></div>';
+    } else if(h.no_uk_info_missing){
+      html+='<div class="section"><h4><span class="sec-icon">🚫</span>Дом без УК</h4><div class="body"><div class="full"><p class="muted">В базе нет таблицы <code>HouseNoUK</code>.</p></div></div></div>';
+    }
+    if(h.contacts&&h.contacts.length){
+      html+='<div class="section"><h4><span class="sec-icon">👤</span>Контакты УК</h4><div class="body"><div class="full">';
+      for(var i=0;i<h.contacts.length;i++){var c=h.contacts[i];html+='<div style="padding:6px 0;border-bottom:1px solid var(--line)"><b>'+esc(c.name||'—')+'</b> '+(c.position?'<span class="muted">('+esc(c.position)+')</span>':'')+' <a href="tel:'+(c.phone||'')+'">'+esc(c.phone||'')+'</a></div>';}
+      html+='</div></div></div>';
+    } else if(h.contacts_missing){
+      html+='<div class="section"><h4><span class="sec-icon">👤</span>Контакты УК</h4><div class="body"><div class="full"><p class="muted">В базе нет таблицы <code>UKContact</code>.</p></div></div></div>';
+    }
+    $('mMkd1Title').innerHTML='🏠 Карточка МКД';
+    $('mMkd1Body').innerHTML=html;
+    $('mMkd1Footer').innerHTML='<button class="gray" onclick="hide(\'mMkd1\')">Закрыть</button>'+(ROLE?'<button onclick="mkdHouseForm('+h.id+')">✏️ Изменить</button>':'')+(ROLE==='admin'?' <button class="red" onclick="mkdDelHouse('+h.id+')">🗑 Удалить</button>':'');
+    show('mMkd1');
+  });
+}
+function kv(k,v){return (v===null||v===undefined||v==='')?'':'<div>'+k+'</div><div>'+v+'</div>';}
+
+/* ============================================================
+   МКД: форма дома (полный CRUD)
+   ============================================================ */
+var F_HOUSE=[
+  ['street','Улица *','text'],
+  ['house_no','Номер дома *','text'],
+  ['uk_id','УК','uk'],
+  ['house_type','Тип дома','list:types'],
+  ['heating','Отопление','list:heating'],
+  ['year_built','Год постройки','number'],
+  ['floors','Этажей','number'],
+  ['flats','Квартир','number'],
+  ['wall','Материал стен','text'],
+  ['municipal_percent','Мун. жильё, %','number'],
+  ['heat_source','Источник тепла','text'],
+  ['heat_system','Система отопления','text'],
+  ['heat_supplier','Поставщик тепла','text'],
+  ['service_org','Обслуживает','text'],
+  ['municipal_note','Мун. (примечание)','text'],
+  ['emergency','Аварийный','check'],
+  ['auction','Аукцион','check'],
+  ['note','Примечание','full']
+];
+var F_REG=[['premises','Помещений','number'],['cap_repair','Последний капремонт','text'],['tech_state','Тех. состояние','text'],['contract_start','Договор: начало','text'],['contract_end','Договор: конец','text'],['faults','Неисправности','full'],['reg_note','Примечание реестра','full']];
+var F_EM=[['quarter','Квартал','text'],['residents','Жильцов','number'],['area','Площадь, м²','number'],['act','Акт, распоряжение','full']];
+var F_NOUK=[['order_text','Приказ','text'],['kind','Вид','text'],['egrn','По ЕГРН','text'],['status','Статус','text'],['municipal','Мун. кв.','text'],['refused_by','Отказ УК','text'],['gis_type','Тип по ГИС','text'],['roa','РОА','text'],['program','Программа','text'],['deadline','Сроки','text']];
+function fieldHtml(pre,f,val){
+  var id='f_'+pre+'_'+f[0],v=(val===null||val===undefined)?'':val,k=f[2];
+  if(k==='check')return '<div class="chk"><input type="checkbox" id="'+id+'"'+(v?' checked':'')+'><label for="'+id+'" style="margin:0;font-weight:400;text-transform:none;letter-spacing:0;color:var(--fg)">'+f[1]+'</label></div>';
+  var lab='<label for="'+id+'">'+f[1]+'</label>';
+  if(k==='uk')return '<div>'+lab+'<select id="'+id+'"><option value="">нет</option>'+MKD_UKS.map(function(u){return '<option value="'+u.id+'"'+(String(v)===String(u.id)?' selected':'')+'>'+esc(u.name)+'</option>';}).join('')+'</select></div>';
+  if(k.indexOf('list:')===0){var arr=MKD_LOOKUPS[k.slice(5)]||[];return '<div>'+lab+'<input id="'+id+'" list="dl_'+f[0]+'" value="'+esc(v)+'"><datalist id="dl_'+f[0]+'">'+arr.map(function(x){return '<option value="'+esc(x)+'">';}).join('')+'</datalist></div>';}
+  if(k==='full')return '<div class="full">'+lab+'<textarea id="'+id+'" rows="2">'+esc(v)+'</textarea></div>';
+  return '<div>'+lab+'<input id="'+id+'" value="'+esc(v)+'"'+(k==='number'?' inputmode="decimal"':'')+'></div>';
+}
+function section(pre,fields,obj){return fields.map(function(f){return fieldHtml(pre,f,obj?obj[f[0]]:null);}).join('');}
+function collectMkd(pre,fields){var o={};fields.forEach(function(f){var el=document.getElementById('f_'+pre+'_'+f[0]);o[f[0]]=f[2]==='check'?el.checked:el.value;});return o;}
+function mkdHouseForm(id){
+  Promise.all([api2('/api/mkd/lookups'),api2('/api/mkd/uks'),id?api2('/api/mkd/house/'+id):Promise.resolve({})]).then(function(r){
+    MKD_LOOKUPS=r[0];MKD_UKS=r[1];var h=r[2];
+    var html='<h3 style="margin-top:0">'+(id?'✏️ Изменить дом':'➕ Новый дом')+'</h3>';
+    html+='<div class="section"><h4><span class="sec-icon">🏠</span>Основные данные</h4><div class="body"><div class="full"><div class="fg2">'+section('h',F_HOUSE,h)+'</div></div></div></div>';
+    html+='<details'+(h.registry_info?' open':'')+'><summary>📋 Реестр МКД с УК</summary><div class="body"><div class="fg2">'+section('r',F_REG,h.registry_info)+'</div></div></details>';
+    html+='<details'+(h.emergency_info?' open':'')+'><summary>⚠️ Аварийность</summary><div class="body"><div class="fg2">'+section('e',F_EM,h.emergency_info)+'</div></div></details>';
+    html+='<details'+(h.no_uk_info?' open':'')+'><summary>🚫 Дом без УК</summary><div class="body"><div class="fg2">'+section('n',F_NOUK,h.no_uk_info)+'</div></div></details>';
+    html+='<div class="msg" id="mkd_err" style="display:none"></div>';
+    $('mMkd1Title').innerHTML=(id?'✏️ Изменить дом':'➕ Новый дом');
+    $('mMkd1Body').innerHTML=html;
+    $('mMkd1Footer').innerHTML='<button class="gray" onclick="hide(\'mMkd1\')">Отмена</button><button class="green" onclick="mkdSaveHouse('+(id||'null')+')" id="bMkdSave">💾 Сохранить</button>';
+    show('mMkd1');
+  });
+}
+function api2(u){return new Promise(function(resolve,reject){api('GET',u,null,function(s,r){if(s===200)resolve(r);else reject(r);});});}
+function mkdSaveHouse(id){
+  var body={house:collectMkd('h',F_HOUSE),registry:collectMkd('r',F_REG),emergency:collectMkd('e',F_EM),no_uk:collectMkd('n',F_NOUK)};
+  var err=$('mkd_err');
+  $('bMkdSave').innerHTML='<span class="spinner"></span> Сохранение...';
+  $('bMkdSave').disabled=true;
+  api(id?'PUT':'POST',id?'/api/mkd/house/'+id:'/api/mkd/house',body,function(s,r){
+    $('bMkdSave').innerHTML='💾 Сохранить';
+    $('bMkdSave').disabled=false;
+    if(s!==200){err.textContent=r.error||'Ошибка при сохранении.';err.style.display='block';return;}
+    hide('mMkd1');loadMkd();toast(id?'Дом обновлён ✓':'Дом добавлен ✓','ok');
+    if(!id){mkdHouse(r.id);}
+  });
+}
+function mkdDelHouse(id){
+  if(!confirm('Удалить дом из базы? Данные сохранятся только в журнале изменений.'))return;
+  api('DELETE','/api/mkd/house/'+id,null,function(s,r){
+    if(s!==200){toast(r.error||'Ошибка.','err');return;}
+    hide('mMkd1');loadMkd();toast('Дом удалён','info');
+  });
+}
+
+/* ============================================================
+   МКД: УК и контакты
+   ============================================================ */
+function mkdUkManager(){
+  api('GET','/api/mkd/uks',null,function(s,d){
+    if(s!==200){toast('Ошибка: '+(d&&d.error||s),'err');return;}
+    MKD_UKS=d;
+    var html='<h3 style="margin-top:0">🏢 Управляющие компании</h3>';
+    html+='<div style="display:flex;gap:8px;margin-bottom:14px"><input id="u_new" placeholder="Название новой УК" style="flex:1"><button class="green" onclick="mkdAddUk()">➕ Добавить</button></div>';
+    html+='<div id="u_list"></div>';
+    $('mMkd2Title').innerHTML='🏢 УК и контакты';
+    $('mMkd2Body').innerHTML=html;
+    $('mMkd2Footer').innerHTML='<button class="gray" onclick="hide(\'mMkd2\')">Закрыть</button>';
+    renderUkList(d);
+    show('mMkd2');
+  });
+}
+function renderUkList(list){
+  var h='';
+  if(!list.length)h='<p class="muted">УК пока нет.</p>';
+  for(var i=0;i<list.length;i++){
+    h+='<div style="padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer" onclick="mkdUkCard('+list[i].id+')"><b>'+esc(list[i].name)+'</b></div>';
+  }
+  $('u_list').innerHTML=h;
+}
+function mkdAddUk(){
+  var n=$('u_new').value.trim();
+  if(!n){toast('Впишите название УК.','warn');return;}
+  api('POST','/api/mkd/uk',{name:n},function(s,r){
+    if(s!==200){toast(r.error||'Ошибка.','err');return;}
+    toast('УК добавлена ✓','ok');
+    api('GET','/api/mkd/uks',null,function(s,d){if(s===200)renderUkList(d);});
+  });
+}
+function mkdUkCard(id){
+  var u=MKD_UKS.filter(function(x){return x.id===id;})[0];
+  if(!u)return;
+  api('GET','/api/mkd/uk/'+id+'/contacts',null,function(s,cs){
+    if(s!==200)cs=[];
+    var html='<h3 style="margin-top:0">🏢 '+esc(u.name)+'</h3>';
+    html+='<div class="fg2"><div class="full"><label>Название УК</label><input id="uk_name" value="'+esc(u.name)+'"></div></div>';
+    html+='<div style="margin-top:8px"><button class="green" onclick="mkdSaveUk('+id+')">💾 Сохранить название</button>'+(ROLE==='admin'?' <button class="red" onclick="mkdDelUk('+id+')">🗑 Удалить УК</button>':'')+'</div>';
+    html+='<h4 style="margin:18px 0 10px;font-size:12px;color:var(--fg2);text-transform:uppercase;letter-spacing:.05em">Контакты</h4>';
+    html+='<div id="cts">';
+    for(var i=0;i<cs.length;i++){html+=contactRow(cs[i]);}
+    html+='</div>';
+    html+='<button class="outline" onclick="mkdAddContact('+id+')" style="margin-top:10px">➕ Контакт</button>';
+    html+='<div class="msg" id="uk_err" style="display:none"></div>';
+    $('mMkd2Title').innerHTML='🏢 '+esc(u.name);
+    $('mMkd2Body').innerHTML=html;
+    $('mMkd2Footer').innerHTML='<button class="gray" onclick="hide(\'mMkd2\')">Закрыть</button>';
+    show('mMkd2');
+  });
+}
+function contactRow(c){return '<div class="fg2" data-id="'+(c.id||'')+'" style="padding:8px 0;border-bottom:1px solid var(--line)"><div><label>ФИО</label><input class="c_n" value="'+esc(c.name||'')+'"></div><div><label>Должность</label><input class="c_p" value="'+esc(c.position||'')+'"></div><div class="full"><label>Телефон</label><input class="c_t" value="'+esc(c.phone||'')+'"></div><div class="full" style="display:flex;gap:6px;justify-content:flex-end"><button class="green" onclick="mkdSaveContact(this)">💾</button><button class="red" onclick="mkdDelContact(this)">🗑</button></div></div>';}
+function mkdAddContact(uid){var div=document.createElement('div');div.innerHTML=contactRow({});var row=div.firstChild;row.setAttribute('data-uk',uid);$('cts').appendChild(row);}
+function mkdSaveContact(btn){
+  var row=btn.closest('[data-id]')||btn.closest('[data-uk]');
+  var id=row.getAttribute('data-id'),uid=row.getAttribute('data-uk');
+  var body={name:row.querySelector('.c_n').value,position:row.querySelector('.c_p').value,phone:row.querySelector('.c_t').value};
+  if(!body.name&&!body.position&&!body.phone){toast('Заполните хотя бы одно поле.','warn');return;}
+  if(id){
+    api('PUT','/api/mkd/contact/'+id,body,function(s,r){if(s===200)toast('Контакт обновлён ✓','ok');else toast(r.error||'Ошибка','err');});
+  } else {
+    api('POST','/api/mkd/uk/'+uid+'/contacts',body,function(s,r){if(s===200){row.setAttribute('data-id',r.id);row.removeAttribute('data-uk');toast('Контакт добавлен ✓','ok');}else toast(r.error||'Ошибка','err');});
+  }
+}
+function mkdDelContact(btn){
+  var row=btn.closest('[data-id]')||btn.closest('[data-uk]');
+  var id=row.getAttribute('data-id');
+  if(!id){row.remove();return;}
+  if(!confirm('Удалить контакт?'))return;
+  api('DELETE','/api/mkd/contact/'+id,null,function(s,r){if(s===200){row.remove();toast('Контакт удалён','info');}else toast(r.error||'Ошибка','err');});
+}
+function mkdSaveUk(id){
+  api('PUT','/api/mkd/uk/'+id,{name:$('uk_name').value},function(s,r){
+    if(s===200)toast('Название сохранено ✓','ok');else toast(r.error||'Ошибка','err');
+  });
+}
+function mkdDelUk(id){
+  if(!confirm('Удалить УК и все её контакты?'))return;
+  api('DELETE','/api/mkd/uk/'+id,null,function(s,r){
+    if(s!==200){toast(r.error||'Ошибка.','err');return;}
+    hide('mMkd2');toast('УК удалена','info');
+    api('GET','/api/mkd/uks',null,function(s,d){if(s===200){MKD_UKS=d;mkdUkManager();}});
+  });
+}
+
+/* ============================================================
+   МКД: журнал
+   ============================================================ */
+function mkdShowLog(){
+  $('jTitle').textContent='Журнал изменений МКД';
+  api('GET','/api/mkd/log',null,function(s,r){
+    if(s!==200){toast('Ошибка: '+(r&&r.error||s),'err');return;}
+    var h='<table class="jtable"><thead><tr><th>Когда</th><th>Кто</th><th>Роль</th><th>Действие</th><th>Таблица</th><th>№</th><th>Детали</th></tr></thead><tbody>';
+    for(var i=0;i<r.length;i++){var x=r[i];h+='<tr><td>'+esc(x.at)+'</td><td><b>'+esc(x.user_name||'')+'</b></td><td>'+esc(x.role||'')+'</td><td>'+esc(x.action)+'</td><td>'+esc(x.tbl||'')+'</td><td>'+esc(x.rid||'')+'</td><td class="vv">'+esc(x.details||'')+'</td></tr>';}
+    h+='</tbody></table>';
+    if(!r.length)h='<div class="empty-state"><div class="icon">📜</div><h3>Журнал пуст</h3></div>';
+    $('jb').innerHTML=h;show('mJ');
+  });
+}
+
+/* ============================================================
+   События
+   ============================================================ */
+$('bAdd').onclick=function(){CUR={};renderCard({in_scheme:1,state:'Нет договора'});};
+$('bLogin').onclick=function(){$('lm').style.display='none';show('mLogin');setTimeout(function(){$('lu').focus();},100);};
+$('bOut').onclick=logout;
+$('bJ').onclick=showJournal;
+$('bOnline').onclick=showOnline;
+$('bMap').onclick=showMap;
+$('bMkdAdd').onclick=function(){mkdHouseForm(null);};
+$('bMkdUk').onclick=mkdUkManager;
+$('bMkdLog').onclick=mkdShowLog;
+$('bMapEdit').onclick=function(){
+  if(MAP_MODE==='view'){
+    MAP_MODE='edit';$('mapMode').textContent='редактирование';
+    $('bMapAddPt').style.display='';$('bMapDone').style.display='';
+    $('bMapEdit').style.display='none';
+    toast('Режим редактирования включён','info');
+  }
+};
+$('bMapDone').onclick=function(){
+  MAP_MODE='view';MAP_ADDING=false;
+  $('mapMode').textContent='просмотр';
+  $('bMapAddPt').style.display='none';$('bMapDone').style.display='none';
+  $('bMapEdit').style.display='';
+  if(MAP)MAP.getContainer().style.cursor='';
+};
+$('bMapAddPt').onclick=function(){
+  MAP_ADDING=!MAP_ADDING;
+  if(MAP_ADDING){
+    $('mapInfo').innerHTML='<b>Кликните на карте</b>, куда поставить новую точку.';
+    if(MAP)MAP.getContainer().style.cursor='crosshair';
+  } else {
+    $('mapInfo').innerHTML='Выберите точку на карте.';
+    if(MAP)MAP.getContainer().style.cursor='';
+  }
+};
+$('bMapRefresh').onclick=function(){loadMapMarkers();toast('Карта обновлена','info');};
+var tm=null;
+$('q').oninput=function(){clearTimeout(tm);tm=setTimeout(load,300);};
+$('fScheme').onchange=load;$('fState').onchange=load;
+$('mkd_q').oninput=function(){clearTimeout(tm);tm=setTimeout(mkdFilter,150);};
+$('mkd_uk').onchange=mkdFilter;$('mkd_flt').onchange=mkdFilter;
+$('lp').onkeydown=function(e){if(e.key==='Enter')doLogin();};
+$('lu').onkeydown=function(e){if(e.key==='Enter')$('lp').focus();};
+
+/* Закрытие модалок по клику на затемнение */
+document.querySelectorAll('.modal').forEach(function(m){
+  m.addEventListener('click',function(e){if(e.target===m)m.classList.remove('show');});
+});
+
+/* Старт */
+api('GET','/api/me',null,function(s,r){setRole(r.role,r.name);load();});
+</script>
+</body></html>
