@@ -38,7 +38,9 @@ for p in (UPLOAD, TRASH):
     if not os.path.isdir(p): os.makedirs(p)
 BAD_EXT = set('exe bat cmd com msi scr js vbs ps1 dll jar sh lnk'.split())
 
-app = Flask(__name__, static_folder='static', static_url_path='/static')
+# ВАЖНО: static_folder задаём АБСОЛЮТНЫМ путём — иначе Flask ищет папку относительно
+# рабочей директории, и на некоторых запусках файлы статики (в т.ч. okrug_boundary.geojson) дают 404.
+app = Flask(__name__, static_folder=os.path.join(BASE, 'static'), static_url_path='/static')
 app.secret_key = CFG['secret']
 app.config['MAX_CONTENT_LENGTH'] = 30 * 1024 * 1024
 app.config.update(SESSION_COOKIE_SAMESITE="Lax", PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=12))
@@ -471,9 +473,10 @@ def map_points_list():
 def map_markers_list():
     """Новый endpoint для Leaflet-карты. Возвращает маркеры с lat/lon из нескольких источников:
        1) Кастомные точки из nto_map_point (где заполнены lat/lon)
-       2) НТО-объекты, у которых заполнены lat и lon
+       2) НТО-объекты, у которых заполнены lat и lon (кроме тех, что уже покрыты кастомной точкой — чтобы не было дублей)
     """
     out = []
+    covered_object_ids = set()
     # 1) Кастомные точки
     try:
         pts = rows('SELECT id, object_id, object_type, lat, lon, label, color, is_test, description, updated_at '
@@ -491,13 +494,17 @@ def map_markers_list():
                 'is_test': 1 if r.get('is_test') else 0,
                 'description': r.get('description') or '',
             })
+            if r.get('object_id'):
+                covered_object_ids.add(r['object_id'])
     except Exception as e:
         print('map_markers custom error:', e)
-    # 2) НТО-объекты с координатами
+    # 2) НТО-объекты с координатами (пропускаем те, что уже показаны кастомной точкой)
     try:
         objs = rows('SELECT id, scheme_num, in_scheme, address, owner_name, inn, specialization, lat, lon '
                     'FROM nto_object WHERE is_deleted=0 AND lat IS NOT NULL AND lon IS NOT NULL')
         for o in objs:
+            if o['id'] in covered_object_ids:
+                continue  # уже есть кастомный маркер с привязкой к этому НТО
             out.append({
                 'source': 'nto',
                 'id': o['id'],
@@ -1065,9 +1072,8 @@ def export():
 def index():
     return send_from_directory(os.path.join(BASE, 'static'), 'index.html')
 
-@app.route('/static/<path:filename>')
-def static_files(filename):
-    return send_from_directory(os.path.join(BASE, 'static'), filename)
+# примечание: файлы статики (index.html, map_stub.jpg, okrug_boundary.geojson)
+# раздаёт встроенная ститика Flask — см. static_folder выше. Отдельный маршрут не нужен.
 
 # ============ Старт сервера ============
 def run_server():

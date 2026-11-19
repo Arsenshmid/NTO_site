@@ -144,8 +144,6 @@ tr:last-child td{border-bottom:0}
 .file-item .cap{color:var(--muted);font-size:11px;margin:2px 0}
 .file-item button{margin-top:6px;padding:3px 8px;font-size:11px}
 
-.leaflet-attribution-flag{display:none !important}
-
 /* ====== TABLES (Journal, Online) ====== */
 .jtable{font-size:12px;width:100%;border-collapse:collapse}
 .jtable th{background:#f8fafc;font-size:11px;padding:8px 10px;text-align:left;color:var(--fg2);position:static}
@@ -169,11 +167,8 @@ tr:last-child td{border-bottom:0}
 .map-legend span{display:inline-flex;align-items:center;gap:5px}
 .map-legend i{width:12px;height:12px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 1px #aaa;display:inline-block}
 
-.leaflet-attribution-flag {
-  display: none !important;
-}
-
 /* Custom Leaflet marker styles */
+.leaflet-attribution-flag{display:none !important}
 .custom-marker{background:transparent;border:0}
 .custom-marker .pin{width:28px;height:28px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid #fff;box-shadow:0 3px 8px rgba(0,0,0,.3);position:relative;transition:transform .15s}
 .custom-marker:hover .pin{transform:rotate(-45deg) scale(1.15)}
@@ -809,8 +804,8 @@ function showMap(){
   if(!MAP)initMap(); else setTimeout(function(){MAP.invalidateSize();loadMapMarkers();},100);
 }
 function initMap(){
-  MAP=L.map('mapCanvas',{zoomControl:true,attributionControl:false}).setView([62.0315,129.7338],12);
-  L.control.attribution({prefix:false}).addTo(MAP);
+  // Центр Автодорожного округа (из реальных границ OSM)
+  MAP=L.map('mapCanvas',{zoomControl:true,attributionControl:true}).setView([61.965,129.628],12);
   // Главный слой — OpenStreetMap (бесплатно)
   MAP_LAYERS.osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
     maxZoom:19, attribution:'© OpenStreetMap contributors'
@@ -819,15 +814,39 @@ function initMap(){
   MAP_LAYERS.sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
     maxZoom:19, attribution:'© Esri'
   });
-  // Слой с подписями улиц поверх спутника
-  MAP_LAYERS.labels=L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager_only_labels/{z}/{x}/{y}{r}.png',{
-    maxZoom:19, attribution:'© CARTO'
-  });
   // Переключатель слоёв
   L.control.layers({
     'Карта (OSM)':MAP_LAYERS.osm,
     'Спутник (Esri)':MAP_LAYERS.sat
   }).addTo(MAP);
+  // ==== Граница Автодорожного округа (реальная, из OpenStreetMap) ====
+  // Загружаем полигон границы и рисуем:
+  //  1) «маску» — весь мир минус округ, серым цветом → визуально «вырезает» округ
+  //  2) жирную синюю границу округа
+  fetch('/static/okrug_boundary.geojson').then(function(r){return r.json();}).then(function(geo){
+    var ring = geo.geometry.coordinates[0];  // внешнее кольцо границы округа
+    // Маска: внешний контур = весь мир, дырка = округ
+    var worldRing = [[-360,-90],[360,-90],[360,90],[-360,90],[-360,-90]];
+    L.polygon([worldRing, ring], {
+      stroke:false, fillColor:'#1e293b', fillOpacity:0.55,
+      interactive:false
+    }).addTo(MAP);
+    // Жирная граница округа
+    L.polygon(ring, {
+      color:'#2563eb', weight:3, opacity:0.9, fill:false, interactive:false
+    }).addTo(MAP);
+    // Автоматический зум по границам округа
+    var bounds = L.polygon(ring).getBounds();
+    MAP.fitBounds(bounds, {padding:[20,20]});
+    // Ограничение просмотра: не дальше ~1.5 экрана от округа
+    var sw = bounds.getSouthWest(), ne = bounds.getNorthEast();
+    var latPad = Math.max((ne.lat - sw.lat) * 0.8, 0.05);
+    var lonPad = Math.max((ne.lng - sw.lng) * 0.8, 0.05);
+    MAP.setMaxBounds([[sw.lat-latPad, sw.lng-lonPad],[ne.lat+latPad, ne.lng+lonPad]]);
+  }).catch(function(e){
+    // Если файл границы не загрузился — просто карта без границы
+    toast('Файл границы округа не загрузился: '+e,'warn');
+  });
   // Обработка клика по карте (для добавления новой точки)
   MAP.on('click', function(e){
     if(MAP_ADDING){
