@@ -471,19 +471,35 @@ def map_points_list():
 
 @app.route('/api/map_markers')
 def map_markers_list():
-    """Новый endpoint для Leaflet-карты. Возвращает маркеры с lat/lon из нескольких источников:
-       1) Кастомные точки из nto_map_point (где заполнены lat/lon)
-       2) НТО-объекты, у которых заполнены lat и lon (кроме тех, что уже покрыты кастомной точкой — чтобы не было дублей)
+    """Endpoint для Leaflet-карты. Параметр kind: nto (по умолчанию) | mkd | all.
+       Возвращает маркеры с lat/lon из нескольких источников:
+       1) Кастомные точки из nto_map_point (где заполнены lat/lon), в т.ч. точки МКД (object_type='mkd')
+       2) НТО-объекты, у которых заполнены lat и lon (кроме тех, что уже покрыты кастомной точкой)
+       Для точек МКД подтягиваются данные дома (УК, этажность) из AvtodorDB.House.
+       Карта зеркалит базы SQL Server: точки, привязанные к удалённым НТО, не отдаются,
+       а точки МКД, для которых дом отсутствует в AvtodorDB.House, скрываются.
     """
+    kind = (request.args.get('kind') or 'nto').strip().lower()
+    if kind not in ('nto', 'mkd', 'all'):
+        kind = 'nto'
     out = []
     covered_object_ids = set()
-    # 1) Кастомные точки
+    # 1) Кастомные точки (в т.ч. МКД)
     try:
+        where = 'WHERE lat IS NOT NULL AND lon IS NOT NULL'
+        if kind == 'nto':
+            # карта зеркалит базу: точки МКД не показываем, а точки, привязанные
+            # к удалённым/несуществующим НТО, скрываем (НТО мог быть удалён позже)
+            where += (" AND ISNULL(object_type, 'nto') <> 'mkd'"
+                      " AND (object_id IS NULL OR EXISTS (SELECT 1 FROM nto_object o"
+                      " WHERE o.id = nto_map_point.object_id AND o.is_deleted = 0))")
+        elif kind == 'mkd':
+            where += " AND object_type = 'mkd'"
         pts = rows('SELECT id, object_id, object_type, lat, lon, label, color, is_test, description, updated_at '
-                   'FROM nto_map_point WHERE lat IS NOT NULL AND lon IS NOT NULL ORDER BY id')
+                   'FROM nto_map_point ' + where + ' ORDER BY id')
         for r in pts:
             out.append({
-                'source': 'custom',
+                'source': 'custom' if (r.get('object_type') or 'nto') != 'mkd' else 'mkd',
                 'id': r['id'],
                 'object_id': r.get('object_id'),
                 'object_type': r.get('object_type') or 'nto',
@@ -494,31 +510,73 @@ def map_markers_list():
                 'is_test': 1 if r.get('is_test') else 0,
                 'description': r.get('description') or '',
             })
-            if r.get('object_id'):
+            if r.get('object_id') and (r.get('object_type') or 'nto') != 'mkd':
                 covered_object_ids.add(r['object_id'])
     except Exception as e:
         print('map_markers custom error:', e)
+    # 1а) Обогащение точек МКД данными домов из AvtodorDB (УК, адрес, этажность...)
+    mkd_markers = [m for m in out if m['source'] == 'mkd' and m.get('object_id')]
+    if mkd_markers:
+        try:
+            ids = sorted({str(m['object_id']) for m in mkd_markers})
+            id_list = ','.join(ids)
+            houses = rows(
+                'SELECT h.HouseID AS hid, h.Street, h.HouseNo, h.FullAddress, h.Floors, h.FlatsCount, '
+                'h.YearBuilt, h.IsEmergency, uk.Name AS uk_name '
+                'FROM dbo.House h LEFT JOIN dbo.UK uk ON uk.UKID = h.UKID '
+                'WHERE h.HouseID IN (' + id_list + ')', db='mkd')
+            by_id = {h['hid']: h for h in houses}
+            orphan_pts = set()   # точки МКД, для которых дома нет в базе AvtodorDB
+            for m in mkd_markers:
+                h = by_id.get(m['object_id'])
+                if not h:
+                    orphan_pts.add(id(m))
+                    continue
+                if h.get('FullAddress'):
+                    m['label'] = h['FullAddress']
+                desc = []
+                if h.get('uk_name'):
+                    desc.append('УК: ' + str(h['uk_name']))
+                if h.get('Floors'):
+                    desc.append('этажей: ' + str(h['Floors']))
+                if h.get('FlatsCount'):
+                    desc.append('квартир: ' + str(h['FlatsCount']))
+                if h.get('YearBuilt'):
+                    desc.append('год: ' + str(h['YearBuilt']))
+                if h.get('IsEmergency'):
+                    desc.append('АВАРИЙНЫЙ')
+                if desc:
+                    m['description'] = ('\n'.join(desc) + ('\n' + m['description'] if m.get('description') else '')).strip()
+                m['emergency'] = 1 if h.get('IsEmergency') else 0
+            # карта зеркалит базу МКД: точки, для которых дома нет в AvtodorDB,
+            # из ответа убираем (показывать нечего — дома в базе нет)
+            if orphan_pts:
+                out = [m for m in out if id(m) not in orphan_pts]
+                print('map_markers: скрыто точек МКД без дома в AvtodorDB:', len(orphan_pts))
+        except Exception as e:
+            print('map_markers mkd enrich error (AvtodorDB недоступна?):', e)
     # 2) НТО-объекты с координатами (пропускаем те, что уже показаны кастомной точкой)
-    try:
-        objs = rows('SELECT id, scheme_num, in_scheme, address, owner_name, inn, specialization, lat, lon '
-                    'FROM nto_object WHERE is_deleted=0 AND lat IS NOT NULL AND lon IS NOT NULL')
-        for o in objs:
-            if o['id'] in covered_object_ids:
-                continue  # уже есть кастомный маркер с привязкой к этому НТО
-            out.append({
-                'source': 'nto',
-                'id': o['id'],
-                'object_id': o['id'],
-                'object_type': 'nto',
-                'lat': float(o['lat']),
-                'lon': float(o['lon']),
-                'label': '#' + str(o.get('scheme_num') or '?') + ' ' + (o.get('address') or ''),
-                'color': 'blue' if o.get('in_scheme') else 'orange',
-                'is_test': 0,
-                'description': (o.get('specialization') or '') + ' · ' + (o.get('owner_name') or '') + (('\nИНН: ' + o['inn']) if o.get('inn') else ''),
-            })
-    except Exception as e:
-        print('map_markers nto error:', e)
+    if kind in ('nto', 'all'):
+        try:
+            objs = rows('SELECT id, scheme_num, in_scheme, address, owner_name, inn, specialization, lat, lon '
+                        'FROM nto_object WHERE is_deleted=0 AND lat IS NOT NULL AND lon IS NOT NULL')
+            for o in objs:
+                if o['id'] in covered_object_ids:
+                    continue  # уже есть кастомный маркер с привязкой к этому НТО
+                out.append({
+                    'source': 'nto',
+                    'id': o['id'],
+                    'object_id': o['id'],
+                    'object_type': 'nto',
+                    'lat': float(o['lat']),
+                    'lon': float(o['lon']),
+                    'label': '#' + str(o.get('scheme_num') or '?') + ' ' + (o.get('address') or ''),
+                    'color': 'blue' if o.get('in_scheme') else 'orange',
+                    'is_test': 0,
+                    'description': (o.get('specialization') or '') + ' · ' + (o.get('owner_name') or '') + (('\nИНН: ' + o['inn']) if o.get('inn') else ''),
+                })
+        except Exception as e:
+            print('map_markers nto error:', e)
     return jsonify(out)
 
 @app.route('/api/map_points', methods=['POST'])

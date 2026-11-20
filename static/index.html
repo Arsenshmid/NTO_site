@@ -175,6 +175,12 @@ tr:last-child td{border-bottom:0}
 .custom-marker.sel .pin{transform:rotate(-45deg) scale(1.25);box-shadow:0 0 0 6px rgba(37,99,235,.3),0 3px 8px rgba(0,0,0,.3)}
 .custom-marker .pin::after{content:"";position:absolute;top:7px;left:7px;width:10px;height:10px;background:#fff;border-radius:50%}
 .custom-marker.test .pin{opacity:.7;border-style:dashed}
+.custom-marker.mkd .pin{border-radius:7px;transform:none}
+.custom-marker.mkd:hover .pin{transform:scale(1.15)}
+.custom-marker.mkd .pin::after{border-radius:3px;top:9px;left:9px}
+.map-kind-toggle{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
+.map-kind-toggle button{border-radius:0;background:#fff;color:var(--fg2);padding:6px 14px}
+.map-kind-toggle button.on{background:var(--acc);color:#fff}
 .leaflet-popup-content{font-size:13px;line-height:1.4}
 .leaflet-popup-content b{color:var(--fg)}
 .leaflet-popup-content .pop-actions{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
@@ -382,6 +388,10 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
     <div class="box-b">
       <div class="map-toolbar">
         <span class="muted"><b>Режим:</b> <span id="mapMode">просмотр</span></span>
+        <span class="map-kind-toggle" title="Что показывать на карте">
+          <button id="bMapKindNto" class="on" onclick="setMapKind('nto')">🏪 НТО</button>
+          <button id="bMapKindMkd" onclick="setMapKind('mkd')">🏠 МКД</button>
+        </span>
         <span style="flex:1"></span>
         <button id="bMapEdit" style="display:none">✏️ Редактировать</button>
         <button id="bMapAddPt" class="green" style="display:none">➕ Добавить точку</button>
@@ -389,7 +399,7 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
         <button id="bMapRefresh" class="gray">🔄 Обновить</button>
       </div>
       <div id="mapCanvas"></div>
-      <div class="map-legend">
+      <div class="map-legend" id="mapLegend">
         <span><i style="background:#dc2626"></i>Красная</span>
         <span><i style="background:#16a34a"></i>Зелёная</span>
         <span><i style="background:#2563eb"></i>Синяя (НТО в схеме)</span>
@@ -415,6 +425,46 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
    ============================================================ */
 var ROLE=null, USER=null, DATA=[], SORT='scheme_num', DIR=1, CUR=null, ACTIVE_TAB='nto';
 var MAP=null, MAP_LAYERS={}, MAP_MARKERS=[], MAP_MODE='view', MAP_SELECTED=null, MAP_ADDING=false, MAP_EDIT_MARKER=null;
+var MAP_KIND='nto';   // что показывать на карте: 'nto' | 'mkd'
+function setMapKind(k){
+  if(MAP_KIND===k)return;
+  MAP_KIND=k;
+  $('bMapKindNto').className=(k==='nto')?'on':'';
+  $('bMapKindMkd').className=(k==='mkd')?'on':'';
+  if(MAP_ADDING){MAP_ADDING=false;if(MAP)MAP.getContainer().style.cursor='';$('mapInfo').innerHTML='Выберите точку на карте.';}
+  updateMapLegend();
+  loadMapMarkers();
+}
+function updateMapLegend(){
+  var el=$('mapLegend');if(!el)return;
+  if(MAP_KIND==='mkd'){
+    el.innerHTML='<span><i style="background:#7c3aed"></i>МКД — многоквартирные дома</span>'+
+      '<span><i style="background:#dc2626"></i>Аварийные дома</span>'+
+      '<span class="muted" style="margin-left:auto">Нажмите на дом — откроется карточка МКД</span>';
+  }else{
+    el.innerHTML='<span><i style="background:#dc2626"></i>Красная</span>'+
+      '<span><i style="background:#16a34a"></i>Зелёная</span>'+
+      '<span><i style="background:#2563eb"></i>Синяя (НТО в схеме)</span>'+
+      '<span><i style="background:#d97706"></i>Оранжевая (вне схемы)</span>'+
+      '<span class="muted" style="margin-left:auto">Пунктир = тестовая точка</span>';
+  }
+}
+var TILE_PROVIDERS=[], TILE_IDX=0, TILE_FAILS=0, TILE_OK=0;
+function tileFailed(){
+  if(TILE_OK>0)return; // какие-то тайлы уже загрузились — интернет есть, сбой частичный
+  TILE_FAILS++;
+  if(TILE_FAILS<6)return;
+  if(TILE_FAILS===-999)return;
+  if(TILE_IDX<TILE_PROVIDERS.length-1){
+    MAP.removeLayer(MAP_LAYERS.providers[TILE_IDX]);
+    TILE_IDX++;TILE_FAILS=0;
+    MAP_LAYERS.providers[TILE_IDX].addTo(MAP);
+    toast('Тайлы «'+TILE_PROVIDERS[TILE_IDX-1].label+'» не отвечают — включён источник «'+TILE_PROVIDERS[TILE_IDX].label+'»','warn');
+  }else{
+    TILE_FAILS=-999; // сообщение показываем один раз
+    toast('Подложка карты не загружается (нет доступа к интернету?). Граница округа и точки отображаются.','warn');
+  }
+}
 var MKD_ALL=[], MKD_DATA=[], MKD_SORT=null, MKD_DIR=1, MKD_UKS=[], MKD_LOOKUPS={types:[],heating:[]};
 
 /* Колонки таблицы НТО */
@@ -806,27 +856,39 @@ function showMap(){
 function initMap(){
   // Центр Автодорожного округа (из реальных границ OSM)
   MAP=L.map('mapCanvas',{zoomControl:true,attributionControl:true}).setView([61.965,129.628],12);
-  // Главный слой — OpenStreetMap (бесплатно)
-  MAP_LAYERS.osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    maxZoom:19, attribution:'© OpenStreetMap contributors'
-  }).addTo(MAP);
-  // Альтернативный слой — спутник Esri (тоже бесплатно)
-  MAP_LAYERS.sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
-    maxZoom:19, attribution:'© Esri'
-  });
-  // Переключатель слоёв
-  L.control.layers({
-    'Карта (OSM)':MAP_LAYERS.osm,
-    'Спутник (Esri)':MAP_LAYERS.sat
-  }).addTo(MAP);
+  // Подложка: 3 бесплатных источника тайлов + автопереключение при сбое
+  TILE_PROVIDERS=[
+    {label:'Карта (OSM)', url:'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', subdomains:'abc', attribution:'© OpenStreetMap contributors'},
+    {label:'Карта (Carto)', url:'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', subdomains:'abcd', attribution:'© OpenStreetMap contributors, © CARTO'},
+    {label:'Спутник (Esri)', url:'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', subdomains:'abc', attribution:'© Esri, Maxar, Earthstar Geographics'}
+  ];
+  TILE_IDX=0;TILE_FAILS=0;TILE_OK=0;
+  MAP_LAYERS.providers=[];
+  var layerCtl={};
+  for(var i=0;i<TILE_PROVIDERS.length;i++){
+    var tp=TILE_PROVIDERS[i];
+    var tl=L.tileLayer(tp.url,{maxZoom:19,subdomains:tp.subdomains,attribution:tp.attribution});
+    tl.on('tileload',function(){TILE_OK++;});
+    tl.on('tileerror',function(){tileFailed();});
+    MAP_LAYERS.providers.push(tl);
+    layerCtl[tp.label]=tl;
+  }
+  MAP_LAYERS.providers[0].addTo(MAP);
+  // Переключатель слоёв (значок в правом верхнем углу карты)
+  L.control.layers(layerCtl).addTo(MAP);
   // ==== Граница Автодорожного округа (реальная, из OpenStreetMap) ====
   // Загружаем полигон границы и рисуем:
   //  1) «маску» — весь мир минус округ, серым цветом → визуально «вырезает» округ
   //  2) жирную синюю границу округа
   fetch('/static/okrug_boundary.geojson').then(function(r){return r.json();}).then(function(geo){
-    var ring = geo.geometry.coordinates[0];  // внешнее кольцо границы округа
-    // Маска: внешний контур = весь мир, дырка = округ
-    var worldRing = [[-360,-90],[360,-90],[360,90],[-360,90],[-360,-90]];
+    if(!geo||!geo.geometry||!geo.geometry.coordinates||!geo.geometry.coordinates[0]){
+      toast('Некорректный файл границы округа (okrug_boundary.geojson)','warn');return;
+    }
+    // ВАЖНО: GeoJSON хранит координаты как [долгота, широта],
+    // а Leaflet ожидает [широта, долгота] — меняем порядок.
+    var ring = geo.geometry.coordinates[0].map(function(p){return [p[1], p[0]];});
+    // Маска: внешний контур = весь мир (±360° на все копии карты), дырка = округ
+    var worldRing = [[-85.06,-360],[-85.06,360],[85.06,360],[85.06,-360],[-85.06,-360]];
     L.polygon([worldRing, ring], {
       stroke:false, fillColor:'#1e293b', fillOpacity:0.55,
       interactive:false
@@ -864,8 +926,9 @@ function initMap(){
   });
   loadMapMarkers();
 }
+function pluralRu(n,one,few,many){var n10=n%10,n100=n%100;if(n10===1&&n100!==11)return one;if(n10>=2&&n10<=4&&(n100<10||n100>=20))return few;return many;}
 function loadMapMarkers(){
-  api('GET','/api/map_markers',null,function(s,r){
+  api('GET','/api/map_markers?kind='+MAP_KIND,null,function(s,r){
     if(s!==200)return;
     // очистим старые маркеры
     if(MAP_MARKERS.length){
@@ -873,24 +936,28 @@ function loadMapMarkers(){
       MAP_MARKERS=[];
     }
     MAP_SELECTED=null;
+    var shown=0;
     for(var i=0;i<r.length;i++){
       var m=r[i];
+      var isMkd=(m.source==='mkd'||m.object_type==='mkd');
       var color=m.color||'red';
       var cssColor=color==='red'?'#dc2626':(color==='green'?'#16a34a':(color==='blue'?'#2563eb':(color==='orange'?'#d97706':color)));
+      if(isMkd)cssColor=m.emergency?'#dc2626':'#7c3aed';
       var icon=L.divIcon({
-        className:'custom-marker'+(m.is_test?' test':''),
+        className:'custom-marker'+(m.is_test?' test':'')+(isMkd?' mkd':''),
         html:'<div class="pin" style="background:'+cssColor+'"></div>',
         iconSize:[28,28], iconAnchor:[14,28], popupAnchor:[0,-28]
       });
       var marker=L.marker([m.lat,m.lon],{icon:icon,draggable:false}).addTo(MAP);
       marker._pointData=m;
-      var popHtml='<b>'+esc(m.label||('точка #'+m.id))+'</b>';
+      var popHtml='<b>'+(isMkd?'🏠 ':'')+esc(m.label||(('точка #'+m.id)))+'</b>';
       if(m.description)popHtml+='<br>'+esc(m.description).replace(/\n/g,'<br>');
-      popHtml+='<br><span class="muted">тип: '+esc(m.object_type||'nto')+' · '+(m.is_test?'тестовая':'обычная')+'</span>';
+      if(!isMkd)popHtml+='<br><span class="muted">тип: '+esc(m.object_type||'nto')+' · '+(m.is_test?'тестовая':'обычная')+'</span>';
       popHtml+='<div class="pop-actions">';
-      if(m.object_id&&m.source==='nto'){popHtml+='<button onclick="hide(\'mMap\');openCard('+m.object_id+')">Открыть НТО</button>';}
-      if(ROLE==='admin'||ROLE==='editor'){popHtml+='<button class="gray" onclick="editMapPoint('+m.id+')">Изменить</button>';}
-      if(ROLE==='admin'){popHtml+='<button class="red" onclick="delMapPoint('+m.id+')">Удалить</button>';}
+      if(isMkd&&m.object_id){popHtml+='<button onclick="hide(\'mMap\');mkdHouse('+m.object_id+')">Открыть карточку МКД</button>';}
+      if(!isMkd&&m.object_id&&m.source==='nto'){popHtml+='<button onclick="hide(\'mMap\');openCard('+m.object_id+')">Открыть НТО</button>';}
+      if(ROLE==='admin'||ROLE==='editor'){if(!isMkd)popHtml+='<button class="gray" onclick="editMapPoint('+m.id+')">Изменить</button>';}
+      if(ROLE==='admin'){if(!isMkd)popHtml+='<button class="red" onclick="delMapPoint('+m.id+')">Удалить</button>';}
       popHtml+='</div>';
       marker.bindPopup(popHtml);
       marker.on('click',function(e){
@@ -899,16 +966,22 @@ function loadMapMarkers(){
         showMapInfo(p);
       });
       MAP_MARKERS.push(marker);
+      shown++;
     }
-    if(!r.length)$('mapInfo').innerHTML='<b>Маркеров нет.</b> '+(ROLE?'Нажмите «Добавить точку» и кликните на карте.':'Войдите как редактор, чтобы добавлять точки.');
+    if(!r.length)$('mapInfo').innerHTML='<b>Маркеров нет.</b> '+(MAP_KIND==='mkd'?'Выполните миграцию 10 (координаты МКД).':(ROLE?'Нажмите «Добавить точку» и кликните на карте.':'Войдите как редактор, чтобы добавлять точки.'));
+    else if(MAP_KIND==='mkd')$('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'дом','дома','домов')+' МКД · данные из базы <b>AvtodorDB</b> (SQL Server)';
+    else $('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'точка','точки','точек')+' НТО · данные из базы <b>NtoDB</b> (SQL Server)';
   });
 }
 function showMapInfo(p){
-  var html='<b>'+(p.label||('точка #'+p.id))+'</b>';
+  var isMkd=(p.source==='mkd'||p.object_type==='mkd');
+  var html='<b>'+(isMkd?'🏠 ':'')+(p.label||('точка #'+p.id))+'</b>';
   if(p.description)html+='<br>'+esc(p.description).replace(/\n/g,'<br>');
   html+='<br><span class="muted">координаты: '+p.lat.toFixed(6)+', '+p.lon.toFixed(6)+'</span>';
   if(p.is_test)html+=' <span class="badge b-Нет">тестовая</span>';
-  if(p.object_id&&p.source==='nto')html+='<br><button onclick="hide(\'mMap\');openCard('+p.object_id+')" style="margin-top:6px">Открыть карточку НТО №'+p.object_id+'</button>';
+  if(isMkd&&p.emergency)html+=' <span class="badge b-Истёк">аварийный</span>';
+  if(isMkd&&p.object_id)html+='<br><button onclick="hide(\'mMap\');mkdHouse('+p.object_id+')" style="margin-top:6px">Открыть карточку МКД</button>';
+  if(!isMkd&&p.object_id&&p.source==='nto')html+='<br><button onclick="hide(\'mMap\');openCard('+p.object_id+')" style="margin-top:6px">Открыть карточку НТО №'+p.object_id+'</button>';
   $('mapInfo').innerHTML=html;
 }
 function editMapPoint(id){
@@ -1227,6 +1300,7 @@ $('bMapDone').onclick=function(){
   if(MAP)MAP.getContainer().style.cursor='';
 };
 $('bMapAddPt').onclick=function(){
+  if(MAP_KIND!=='nto'){toast('Добавление точек работает в режиме НТО','warn');return;}
   MAP_ADDING=!MAP_ADDING;
   if(MAP_ADDING){
     $('mapInfo').innerHTML='<b>Кликните на карте</b>, куда поставить новую точку.';
