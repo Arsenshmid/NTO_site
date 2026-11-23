@@ -9,6 +9,15 @@
    улицы (Street) и номера (HouseNo), поэтому порядок HouseID не важен.
    Точки МКД показываются на карте при выборе режима «МКД».
 
+   ИСПРАВЛЕНО 20.11: раньше скрипт падал с ошибкой 547 «Конфликт
+   инструкции INSERT с ограничением FOREIGN KEY FK__nto_map_p__...».
+   Причина: столбец object_id был связан внешним ключом с таблицей
+   НТО (nto_object), а точкам МКД нужно записывать туда номера домов
+   из ДРУГОЙ базы (AvtodorDB.House) — один внешний ключ на две базы
+   невозможен. Теперь скрипт сам снимает это ограничение перед вставкой;
+   правильность ссылок на НТО дополнительно проверяет сайт
+   (app.py) при добавлении и изменении точек.
+
    Координаты домов собраны из OpenStreetMap, часть — приблизительно
    (центр улицы/микрорайона). Скрипт можно запускать ПОВТОРНО:
    уже существующие точки (тот же адрес) не дублируются.
@@ -18,6 +27,31 @@ PRINT N'Начата миграция 10 (точки МКД на карту)...'
 SET XACT_ABORT ON;
 BEGIN TRY
   BEGIN TRANSACTION;
+
+  /* --- ШАГ 1: снимаем внешний ключ object_id -> nto_object.id ---
+     Он мешает точкам МКД: в object_id записывается номер дома из
+     AvtodorDB.House, а не номер НТО. Имя ключа в разных базах разное,
+     поэтому ищем его динамически (и снимем все, если несколько).
+     ВАЖНО: используем переменную @sql + EXEC sp_executesql — склейка строк
+     внутри EXEC(...) не работает в SQL Server (ошибка 102 около QUOTENAME). */
+  DECLARE @fk sysname;
+  DECLARE @sql NVARCHAR(MAX);
+  SELECT TOP 1 @fk = fk.name
+    FROM sys.foreign_keys fk
+   WHERE fk.parent_object_id      = OBJECT_ID(N'dbo.nto_map_point')
+     AND fk.referenced_object_id  = OBJECT_ID(N'dbo.nto_object');
+  WHILE @fk IS NOT NULL
+  BEGIN
+    SET @sql = N'ALTER TABLE dbo.nto_map_point DROP CONSTRAINT ' + QUOTENAME(@fk) + N';';
+    EXEC sp_executesql @sql;
+    PRINT N'Снято ограничение внешнего ключа (мешал точкам МКД): ' + @fk;
+    SET @fk = NULL;
+    SELECT TOP 1 @fk = fk.name
+      FROM sys.foreign_keys fk
+     WHERE fk.parent_object_id      = OBJECT_ID(N'dbo.nto_map_point')
+       AND fk.referenced_object_id  = OBJECT_ID(N'dbo.nto_object');
+  END
+  PRINT N'Ограничение object_id -> nto_object: не найдено (уже снято) или успешно снято.';
 
   IF NOT EXISTS (SELECT 1 FROM sys.columns
                  WHERE object_id = OBJECT_ID(N'dbo.nto_map_point') AND name = 'object_type')

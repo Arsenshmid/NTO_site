@@ -103,6 +103,11 @@ tr:last-child td{border-bottom:0}
 .tag-out{background:#f3e8ff;color:#6b21a8;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
 .tag-em{background:var(--err-bg);color:#991b1b;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
 .tag-nouk{background:var(--warn-bg);color:#92400e;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+.tag-res{background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+.tag-auc{background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+.tag-und{background:#f3e8ff;color:#6b21a8;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+.tag-dem{background:#374151;color:#fbbf24;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase}
+tr.demolished{opacity:0.55;text-decoration:line-through}
 
 /* ====== MODAL ====== */
 .modal{position:fixed;inset:0;background:rgba(15,23,42,.55);backdrop-filter:blur(4px);display:none;overflow:auto;z-index:200;padding:20px 0}
@@ -301,7 +306,10 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
       <option value="with_uk">С УК</option>
       <option value="no_uk">Без УК</option>
       <option value="emergency">Аварийные</option>
+      <option value="resettled">Расселённые</option>
       <option value="auction">Аукцион</option>
+      <option value="undefined">Неопределённые</option>
+      <option value="demolished">Снесённые</option>
     </select>
     <button id="bMkdAdd" style="display:none"><span>+</span> Добавить дом</button>
     <button id="bMkdUk" style="display:none"><span>🏢</span> УК и контакты</button>
@@ -392,6 +400,8 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
           <button id="bMapKindNto" class="on" onclick="setMapKind('nto')">🏪 НТО</button>
           <button id="bMapKindMkd" onclick="setMapKind('mkd')">🏠 МКД</button>
         </span>
+        <input id="mapSearch" class="grow" placeholder="🔍 поиск по адресу или названию (фильтрует точки на карте)" style="min-width:280px">
+        <span class="muted" id="mapSearchInfo"></span>
         <span style="flex:1"></span>
         <button id="bMapEdit" style="display:none">✏️ Редактировать</button>
         <button id="bMapAddPt" class="green" style="display:none">➕ Добавить точку</button>
@@ -425,6 +435,7 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
    ============================================================ */
 var ROLE=null, USER=null, DATA=[], SORT='scheme_num', DIR=1, CUR=null, ACTIVE_TAB='nto';
 var MAP=null, MAP_LAYERS={}, MAP_MARKERS=[], MAP_MODE='view', MAP_SELECTED=null, MAP_ADDING=false, MAP_EDIT_MARKER=null;
+var MAP_MOVING_MKD=null, MAP_MOVING_POINT=null;  // режим перемещения: {id,label}
 var MAP_KIND='nto';   // что показывать на карте: 'nto' | 'mkd'
 function setMapKind(k){
   if(MAP_KIND===k)return;
@@ -432,21 +443,25 @@ function setMapKind(k){
   $('bMapKindNto').className=(k==='nto')?'on':'';
   $('bMapKindMkd').className=(k==='mkd')?'on':'';
   if(MAP_ADDING){MAP_ADDING=false;if(MAP)MAP.getContainer().style.cursor='';$('mapInfo').innerHTML='Выберите точку на карте.';}
+  // сбросить поиск при переключении режима
+  MAP_SEARCH='';if($('mapSearch'))$('mapSearch').value='';if($('mapSearchInfo'))$('mapSearchInfo').textContent='';
   updateMapLegend();
   loadMapMarkers();
 }
 function updateMapLegend(){
   var el=$('mapLegend');if(!el)return;
   if(MAP_KIND==='mkd'){
-    el.innerHTML='<span><i style="background:#7c3aed"></i>МКД — многоквартирные дома</span>'+
-      '<span><i style="background:#dc2626"></i>Аварийные дома</span>'+
-      '<span class="muted" style="margin-left:auto">Нажмите на дом — откроется карточка МКД</span>';
+    el.innerHTML='<span><i style="background:#7c3aed"></i>МКД (обычные)</span>'+
+      '<span><i style="background:#dc2626"></i>Аварийные</span>'+
+      '<span><i style="background:#d97706"></i>На аукционе</span>'+
+      '<span><i style="background:#16a34a"></i>Без УК / не определён</span>'+
+      '<span class="muted" style="margin-left:auto">Данные из AvtodorDB.House · клик → карточка МКД</span>';
   }else{
     el.innerHTML='<span><i style="background:#dc2626"></i>Красная</span>'+
       '<span><i style="background:#16a34a"></i>Зелёная</span>'+
       '<span><i style="background:#2563eb"></i>Синяя (НТО в схеме)</span>'+
       '<span><i style="background:#d97706"></i>Оранжевая (вне схемы)</span>'+
-      '<span class="muted" style="margin-left:auto">Пунктир = тестовая точка</span>';
+      '<span class="muted" style="margin-left:auto">Данные из NtoDB · пунктир = тестовая точка</span>';
   }
 }
 var TILE_PROVIDERS=[], TILE_IDX=0, TILE_FAILS=0, TILE_OK=0;
@@ -555,7 +570,15 @@ function fmtDate(v){
 function api(m,u,body,cb,isForm){
   var x=new XMLHttpRequest();x.open(m,u);
   if(body&&!isForm)x.setRequestHeader('Content-Type','application/json');
-  x.onload=function(){var r={};try{r=JSON.parse(x.responseText)}catch(e){}cb(x.status,r)};
+  x.onload=function(){
+    var r={};
+    try{r=JSON.parse(x.responseText)}catch(e){
+      // если сервер вернул HTML (например, страницу ошибки Flask) — даём понятное сообщение
+      if(x.status===413){r={error:'Файлы слишком большие (больше 500 МБ суммарно). Загрузите меньшими порциями.'};}
+      else if(x.status>=400){r={error:'Ошибка сервера (статус '+x.status+'). Возможно, сервер не запущен или файл слишком большой.'};}
+    }
+    cb(x.status,r);
+  };
   x.onerror=function(){cb(0,{error:'Нет связи с сервером.'})};
   x.send(body?(isForm?body:JSON.stringify(body)):null);
 }
@@ -750,22 +773,24 @@ function renderCard(o){
        '<a target="_blank" href="https://egrul.nalog.ru/index.html">ЕГРЮЛ/ЕГРИП (ФНС)</a></div></div></div></div>';
   }
   if(o.id){
-    h+='<div class="section"><h4><span class="sec-icon">📎</span>Фото и документы</h4><div class="body"><div class="full">';
+    h+='<div class="section"><h4><span class="sec-icon">📎</span>Фото и документы <span class="muted" style="font-weight:400">('+ (o.file_count_total||0) +')</span></h4><div class="body"><div class="full">';
     var fl=o.file_list||[];var total=o.file_count_total||fl.length;
     var photos=[],docs=[];
     for(var i=0;i<fl.length;i++){if(fl[i].is_photo)photos.push(fl[i]);else docs.push(fl[i]);}
     if(photos.length>0){
       h+='<div class="files">';
-      for(var i=0;i<photos.length;i++){var f=photos[i];h+='<div class="file-item"><a href="/api/files/'+f.id+'" target="_blank"><img src="/api/files/'+f.id+'"></a><div class="nm"><a href="/api/files/'+f.id+'" target="_blank">'+esc(f.file_name)+'</a></div><div class="cap">'+esc(f.caption||'')+'</div>'+(ROLE?'<button class="red" onclick="delFile('+f.id+')">Удалить</button>':'')+'</div>';}
+      for(var i=0;i<photos.length;i++){var f=photos[i];h+='<div class="file-item"><a href="/api/files/'+f.id+'" target="_blank"><img src="/api/files/'+f.id+'"></a><div class="nm"><a href="/api/files/'+f.id+'" target="_blank">'+esc(f.file_name)+'</a></div><div class="cap">'+esc(f.caption||'')+'</div>'+(ROLE?'<label style="display:block;margin-top:6px;font-size:11px"><input type="checkbox" class="nto-file-check" value="'+f.id+'"> выбрать</label>':'')+'</div>';}
       h+='</div>';
     }
     if(ROLE){
       if(docs.length>0){
         h+='<h4 style="margin:14px 0 8px;font-size:12px;color:var(--fg2);text-transform:uppercase;letter-spacing:.05em">Документы ('+docs.length+')</h4><div class="files">';
-        for(var i=0;i<docs.length;i++){var f=docs[i];h+='<div class="file-item"><div class="nm"><a href="/api/files/'+f.id+'" target="_blank">'+esc(f.file_name)+'</a></div><div class="cap">'+esc(f.caption||'')+'</div><button class="red" onclick="delFile('+f.id+')">Удалить</button></div>';}
+        for(var i=0;i<docs.length;i++){var f=docs[i];h+='<div class="file-item"><div class="nm"><a href="/api/files/'+f.id+'" target="_blank">'+esc(f.file_name)+'</a></div><div class="cap">'+esc(f.caption||'')+'</div><label style="display:block;margin-top:6px;font-size:11px"><input type="checkbox" class="nto-file-check" value="'+f.id+'"> выбрать</label></div>';}
         h+='</div>';
       }
-      h+='<div class="field" style="margin-top:14px"><label>Загрузить файл (до 30 МБ)</label><input type="file" id="upf"></div><div class="field"><label>Подпись к файлу</label><input id="upc" placeholder="например: Фасад с ул. Ленина, июль 2026"></div><div class="full"><button onclick="upload()">Загрузить</button></div>';
+      h+='<div class="field" style="margin-top:14px"><label>Загрузить файлы (можно несколько, до 30 МБ каждый)</label><input type="file" id="upf" multiple></div>';
+      h+='<div class="field" style="margin-top:8px"><label>Или загрузить целую папку (с подпапками)</label><input type="file" id="upfDir" webkitdirectory directory multiple></div>';
+      h+='<div class="full"><button onclick="upload()">Загрузить выбранные</button> <button class="red" onclick="delFilesSelected()">Удалить выбранные</button></div>';
       if(total===0)h+='<p class="muted" style="margin-top:8px">Файлов нет. Загрузите первое фото — оно будет видно всем без входа.</p>';
     }else{
       if(total>photos.length)h+='<p class="muted" style="margin-top:10px">Документы видны только после входа.</p>';
@@ -798,17 +823,54 @@ function delCard(){
   });
 }
 function upload(){
-  var f=$('upf').files[0];
-  if(!f){toast('Сначала выберите файл.','warn');return;}
-  var fd=new FormData();fd.append('file',f);fd.append('caption',$('upc').value);
+  // Собираем файлы из обоих input'ов: обычный multiple + папка (webkitdirectory)
+  var allFiles=[];
+  var upf=$('upf');
+  var upfDir=$('upfDir');
+  if(upf&&upf.files&&upf.files.length){
+    for(var i=0;i<upf.files.length;i++)allFiles.push(upf.files[i]);
+  }
+  if(upfDir&&upfDir.files&&upfDir.files.length){
+    for(var i=0;i<upfDir.files.length;i++)allFiles.push(upfDir.files[i]);
+  }
+  if(!allFiles.length){toast('Сначала выберите файл(ы) или папку.','warn');return;}
+  // FormData: для файлов из папки сохраняем относительный путь в имени
+  var fd=new FormData();
+  for(var i=0;i<allFiles.length;i++){
+    var f=allFiles[i];
+    var path=f.webkitRelativePath||f.name;  // "папка/подпапка/файл.pdf" или "файл.pdf"
+    var safeName=path.replace(/\//g,'_').replace(/\\/g,'_');  // "папка_подпапка_файл.pdf"
+    // создаём новый File с переименованным именем, чтобы сохранить структуру
+    var newFile=new File([f],safeName,{type:f.type||'application/octet-stream'});
+    fd.append('file',newFile);
+  }
+  toast('Загружаю файлов: '+allFiles.length+'...','info');
   api('POST','/api/nto/'+CUR.id+'/files',fd,function(s,r){
-    if(s!==200){toast(r.error||'Ошибка загрузки файла.','err');return;}
-    openCard(CUR.id);load();toast('Файл загружен ✓','ok');
+    if(s!==200){toast(r&&r.error||'Ошибка загрузки файла.','err');return;}
+    // очистить input'ы
+    if(upf)upf.value='';
+    if(upfDir)upfDir.value='';
+    openCard(CUR.id);load();
+    var msg='Загружено: '+r.added;
+    if(r.skipped&&r.skipped.length)msg+='. Пропущено: '+r.skipped.length;
+    toast(msg,'ok');
   },true);
 }
 function delFile(fid){
   if(!confirm('Удалить файл? Он будет перенесён в _удалённые.'))return;
   api('DELETE','/api/files/'+fid,null,function(){openCard(CUR.id);load();toast('Файл удалён','info');});
+}
+function delFilesSelected(){
+  // собрать все отмеченные чекбоксы .nto-file-check
+  var checks=document.querySelectorAll('.nto-file-check:checked');
+  if(!checks.length){toast('Отметьте файлы галочками для удаления.','warn');return;}
+  var ids=[];
+  for(var i=0;i<checks.length;i++)ids.push(parseInt(checks[i].value,10));
+  if(!confirm('Удалить файлов: '+ids.length+'?\nОни будут перенесены в папку _удалённые.'))return;
+  api('POST','/api/nto/'+CUR.id+'/files/delete',{ids:ids},function(s,r){
+    if(s!==200){toast(r&&r.error||'Ошибка удаления.','err');return;}
+    openCard(CUR.id);load();toast('Удалено файлов: '+(r&&r.count||0),'ok');
+  });
 }
 
 /* ============================================================
@@ -909,7 +971,7 @@ function initMap(){
     // Если файл границы не загрузился — просто карта без границы
     toast('Файл границы округа не загрузился: '+e,'warn');
   });
-  // Обработка клика по карте (для добавления новой точки)
+  // Обработка клика по карте (для добавления/перемещения точки)
   MAP.on('click', function(e){
     if(MAP_ADDING){
       var label=prompt('Подпись точки (или пусто):','')||'';
@@ -920,6 +982,36 @@ function initMap(){
         MAP_ADDING=false;$('mapMode').textContent='просмотр';
         $('bMapAddPt').style.display=(ROLE?'':'none');
         toast('Точка добавлена ✓','ok');
+        loadMapMarkers();
+      });
+    } else if(MAP_MOVING_MKD){
+      // перемещение дома МКД: клик по карте = новые координаты
+      var lat=e.latlng.lat, lon=e.latlng.lng;
+      if(!confirm('Переместить дом «'+MAP_MOVING_MKD.label+'» в эту точку?\n\nКоординаты: '+lat.toFixed(6)+', '+lon.toFixed(6)+'\n\nЕсли да — точка встанет на новое место. Старое положение будет потеряно.')){
+        return;  // пользователь передумал — остаёмся в режиме перемещения
+      }
+      api('PUT','/api/mkd/house/'+MAP_MOVING_MKD.id+'/move',{lat:lat,lon:lon,approx:false},function(s,r){
+        if(s!==200){toast('Не удалось переместить: '+(r&&r.error||s),'err');return;}
+        toast(r&&r.message||('Дом перемещён ✓'),'ok');
+        MAP_MOVING_MKD=null;
+        $('mapMode').textContent='просмотр';
+        if(MAP)MAP.getContainer().style.cursor='';
+        $('bMapDone').style.display='none';
+        loadMapMarkers();
+      });
+    } else if(MAP_MOVING_POINT){
+      // перемещение точки НТО (кастомной): клик по карте = новые координаты
+      var lat2=e.latlng.lat, lon2=e.latlng.lng;
+      if(!confirm('Переместить точку «'+MAP_MOVING_POINT.label+'» в эту точку?\n\nКоординаты: '+lat2.toFixed(6)+', '+lon2.toFixed(6))){
+        return;
+      }
+      api('PUT','/api/map_points/'+MAP_MOVING_POINT.id,{lat:lat2,lon:lon2},function(s,r){
+        if(s!==200){toast('Не удалось переместить: '+(r&&r.error||s),'err');return;}
+        toast('Точка перемещена ✓','ok');
+        MAP_MOVING_POINT=null;
+        $('mapMode').textContent='просмотр';
+        if(MAP)MAP.getContainer().style.cursor='';
+        $('bMapDone').style.display='none';
         loadMapMarkers();
       });
     }
@@ -942,7 +1034,14 @@ function loadMapMarkers(){
       var isMkd=(m.source==='mkd'||m.object_type==='mkd');
       var color=m.color||'red';
       var cssColor=color==='red'?'#dc2626':(color==='green'?'#16a34a':(color==='blue'?'#2563eb':(color==='orange'?'#d97706':color)));
-      if(isMkd)cssColor=m.emergency?'#dc2626':'#7c3aed';
+      if(isMkd){
+        // приоритет цветов для МКД: аварийный → красный, на аукционе → оранжевый,
+        // без УК / неопределённый → зелёный, иначе фиолетовый
+        if(m.emergency)cssColor='#dc2626';
+        else if(m.auction)cssColor='#d97706';
+        else if(m.no_uk||m.undefined)cssColor='#16a34a';
+        else cssColor='#7c3aed';
+      }
       var icon=L.divIcon({
         className:'custom-marker'+(m.is_test?' test':'')+(isMkd?' mkd':''),
         html:'<div class="pin" style="background:'+cssColor+'"></div>',
@@ -955,8 +1054,13 @@ function loadMapMarkers(){
       if(!isMkd)popHtml+='<br><span class="muted">тип: '+esc(m.object_type||'nto')+' · '+(m.is_test?'тестовая':'обычная')+'</span>';
       popHtml+='<div class="pop-actions">';
       if(isMkd&&m.object_id){popHtml+='<button onclick="hide(\'mMap\');mkdHouse('+m.object_id+')">Открыть карточку МКД</button>';}
+      if(isMkd&&m.object_id&&(ROLE==='admin'||ROLE==='editor')){
+        popHtml+='<button class="gray" onclick="startMoveMkd('+m.object_id+',\''+esc(m.label||('дом #'+m.object_id)).replace(/'/g,"\\'")+'\')">Переместить</button>';
+        popHtml+='<button class="gray" onclick="hideMkdFromMap('+m.object_id+',\''+esc(m.label||('дом #'+m.object_id)).replace(/'/g,"\\'")+'\')">Скрыть с карты</button>';
+      }
       if(!isMkd&&m.object_id&&m.source==='nto'){popHtml+='<button onclick="hide(\'mMap\');openCard('+m.object_id+')">Открыть НТО</button>';}
       if(ROLE==='admin'||ROLE==='editor'){if(!isMkd)popHtml+='<button class="gray" onclick="editMapPoint('+m.id+')">Изменить</button>';}
+      if(ROLE==='admin'||ROLE==='editor'){if(!isMkd)popHtml+='<button class="gray" onclick="startMovePoint('+m.id+')">Переместить</button>';}
       if(ROLE==='admin'){if(!isMkd)popHtml+='<button class="red" onclick="delMapPoint('+m.id+')">Удалить</button>';}
       popHtml+='</div>';
       marker.bindPopup(popHtml);
@@ -968,8 +1072,8 @@ function loadMapMarkers(){
       MAP_MARKERS.push(marker);
       shown++;
     }
-    if(!r.length)$('mapInfo').innerHTML='<b>Маркеров нет.</b> '+(MAP_KIND==='mkd'?'Выполните миграцию 10 (координаты МКД).':(ROLE?'Нажмите «Добавить точку» и кликните на карте.':'Войдите как редактор, чтобы добавлять точки.'));
-    else if(MAP_KIND==='mkd')$('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'дом','дома','домов')+' МКД · данные из базы <b>AvtodorDB</b> (SQL Server)';
+    if(!r.length)$('mapInfo').innerHTML='<b>Маркеров нет.</b> '+(MAP_KIND==='mkd'?'Выполните миграцию 11 (полное обновление базы AvtodorDB из Excel) — она добавит колонки Lat/Lon в таблицу House и заполнит координаты.':(ROLE?'Нажмите «Добавить точку» и кликните на карте.':'Войдите как редактор, чтобы добавлять точки.'));
+    else if(MAP_KIND==='mkd')$('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'дом','дома','домов')+' МКД · данные из базы <b>AvtodorDB</b>.House (SQL Server)';
     else $('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'точка','точки','точек')+' НТО · данные из базы <b>NtoDB</b> (SQL Server)';
   });
 }
@@ -1028,12 +1132,15 @@ function mkdFilter(){
   var words=$('mkd_q').value.toLowerCase().split(/\s+/).filter(Boolean);
   var uk=$('mkd_uk').value,f=$('mkd_flt').value;
   MKD_DATA=MKD_ALL.filter(function(h){
-    var hay=((h.address||'')+' '+(h.uk||'')).toLowerCase();
+    var hay=((h.address||'')+' '+(h.uk||'')+' '+(h.uk_name||'')+' '+(h.street||'')+(h.house_no||'')).toLowerCase();
     for(var i=0;i<words.length;i++)if(hay.indexOf(words[i])<0)return false;
     if(uk&&String(h.uk_id)!==uk)return false;
     if(f==='emergency'&&!h.emergency)return false;
     if(f==='no_uk'&&!h.no_uk)return false;
     if(f==='auction'&&!h.auction)return false;
+    if(f==='resettled'&&!h.resettled)return false;
+    if(f==='undefined'&&!h.undefined)return false;
+    if(f==='demolished'&&!h.demolished)return false;
     if(f==='with_uk'&&!h.uk)return false;
     return true;
   });
@@ -1048,8 +1155,12 @@ function mkdRender(){
     var o=d[i];
     var tags='';
     if(o.emergency)tags+='<span class="tag-em">аварийный</span> ';
-    if(o.no_uk)tags+='<span class="tag-nouk">без УК</span>';
-    h+='<tr class="row" onclick="mkdHouse('+o.id+')"><td><b>'+esc(o.address)+'</b></td><td>'+(esc(o.uk)||'<span class="muted">—</span>')+'</td><td>'+esc(o.year_built||'—')+'</td><td>'+esc(o.floors||'—')+'</td><td>'+esc(o.flats||'—')+'</td><td>'+tags+'</td></tr>';
+    if(o.resettled)tags+='<span class="tag-res">расселён</span> ';
+    if(o.auction)tags+='<span class="tag-auc">аукцион</span> ';
+    if(o.no_uk)tags+='<span class="tag-nouk">без УК</span> ';
+    if(o.undefined)tags+='<span class="tag-und">неопределён</span> ';
+    if(o.demolished)tags+='<span class="tag-dem">снесён</span> ';
+    h+='<tr class="row'+(o.demolished?' demolished':'')+'" onclick="mkdHouse('+o.id+')"><td><b>'+esc(o.address)+'</b></td><td>'+(esc(o.uk)||esc(o.uk_name)||'<span class="muted">—</span>')+'</td><td>'+esc(o.year_built||'—')+'</td><td>'+esc(o.floors||'—')+'</td><td>'+esc(o.flats||'—')+'</td><td>'+tags+'</td></tr>';
   }
   $('mkd_tb').innerHTML=h;
   $('mkd_empty').style.display=d.length?'none':'block';
@@ -1058,13 +1169,66 @@ function mkdSort(k){if(MKD_SORT===k)MKD_DIR=-MKD_DIR;else{MKD_SORT=k;MKD_DIR=1}m
 document.querySelectorAll('#tab-mkd th[data-k]').forEach(function(th){th.onclick=function(){mkdSort(th.dataset.k);};});
 
 /* ============================================================
+   МКД: скрыть дом с карты (мягкое скрытие, без удаления из базы)
+   ============================================================ */
+function hideMkdFromMap(id,label){
+  if(!confirm('Скрыть дом с карты?\n\n«'+label+'»\n\nДом останется в базе (его можно будет увидеть во вкладке «МКД»), но больше не будет отображаться на карте. Это удобно для домов, которые не относятся к нашему округу.'))return;
+  api('POST','/api/mkd/house/'+id+'/toggle_map_visibility',null,function(s,r){
+    if(s!==200){toast('Ошибка: '+(r&&r.error||s),'err');return;}
+    toast('Дом '+(r.action||'скрыт с карты')+' ✓','ok');
+    if(MAP)loadMapMarkers();  // перерисовать карту без этого дома
+  });
+}
+
+/* ============================================================
+   Карта: режим перемещения точки (для НТО и МКД)
+   ============================================================ */
+function startMoveMkd(id,label){
+  if(!MAP)return;
+  if(MAP_MOVING_MKD||MAP_MOVING_POINT||MAP_ADDING){
+    toast('Сначала завершите текущее действие (кнопка «Готово»).','warn');return;
+  }
+  MAP_MOVING_MKD={id:id,label:label};
+  $('mapMode').textContent='перемещение МКД';
+  if(MAP)MAP.getContainer().style.cursor='crosshair';
+  $('bMapDone').style.display='';
+  toast('Кликните на карте в правильном месте — дом «'+label+'» переместится туда.','info');
+}
+function startMovePoint(id){
+  if(!MAP)return;
+  if(MAP_MOVING_MKD||MAP_MOVING_POINT||MAP_ADDING){
+    toast('Сначала завершите текущее действие (кнопка «Готово»).','warn');return;
+  }
+  // найдём данные точки в MAP_MARKERS
+  var p=null;
+  for(var i=0;i<MAP_MARKERS.length;i++){
+    if(MAP_MARKERS[i]._pointData.id===id&&MAP_MARKERS[i]._pointData.source==='custom'){p=MAP_MARKERS[i]._pointData;break;}
+  }
+  if(!p){toast('Точка не найдена (можно перемещать только добавленные вручную точки).','err');return;}
+  MAP_MOVING_POINT={id:id,label:p.label||('точка #'+id)};
+  $('mapMode').textContent='перемещение НТО';
+  if(MAP)MAP.getContainer().style.cursor='crosshair';
+  $('bMapDone').style.display='';
+  toast('Кликните на карте в правильном месте — точка «'+MAP_MOVING_POINT.label+'» переместится туда.','info');
+}
+function cancelMapAction(){
+  // кнопка «Готово» — отмена любого режима
+  MAP_ADDING=false;MAP_MOVING_MKD=null;MAP_MOVING_POINT=null;
+  $('mapMode').textContent='просмотр';
+  if(MAP)MAP.getContainer().style.cursor='';
+  $('bMapDone').style.display='none';
+  $('bMapAddPt').style.display=(ROLE?'':'none');
+  toast('Действие отменено.','info');
+}
+
+/* ============================================================
    МКД: карточка дома
    ============================================================ */
 function mkdHouse(id){
   api('GET','/api/mkd/house/'+id,null,function(s,h){
     if(s!==200){toast('Ошибка: '+(h&&h.error||s),'err');return;}
     var html='<h3 style="margin-top:0">🏠 '+esc(h.address)+'</h3>';
-    html+='<div class="kv">'+kv('УК',h.uk)+kv('Тип дома',h.house_type)+kv('Отопление',h.heating)+kv('Источник тепла',h.heat_source)+kv('Система отопления',h.heat_system)+kv('Поставщик тепла',h.heat_supplier)+kv('Обслуживает',h.service_org)+kv('Год постройки',h.year_built)+kv('Этажей',h.floors)+kv('Квартир',h.flats)+kv('Материал стен',h.wall)+kv('Мун. жильё, %',h.municipal_percent)+kv('Мун. (примечание)',h.municipal_note)+kv('Аварийный',h.emergency?'<span class="badge b-Истёк">да</span>':'нет')+kv('Аукцион',h.auction?'<span class="badge b-Истекает">да</span>':'нет')+kv('Примечание',h.note)+'</div>';
+    html+='<div class="kv">'+kv('УК',h.uk||h.uk_name)+kv('Тип дома',h.house_type||h.house_type_text)+kv('Отопление',h.heating||h.heating_text)+kv('Источник тепла',h.heat_source)+kv('Система отопления',h.heat_system)+kv('Поставщик тепла',h.heat_supplier)+kv('Обслуживает',h.service_org)+kv('Год постройки',h.year_built)+kv('Этажей',h.floors)+kv('Квартир',h.flats)+kv('Жильцов',h.residents)+kv('Площадь, м²',h.area)+kv('Квартал',h.quarter)+kv('Материал стен',h.wall)+kv('Мун. жильё, %',h.municipal_percent)+kv('Мун. (примечание)',h.municipal_note)+kv('Аварийный',h.emergency?'<span class="badge b-Истёк">да</span>':'нет')+kv('Расселён',h.resettled?'<span class="badge b-Срок">да</span>':'нет')+kv('Снесён',h.demolished?'<span class="badge b-Истёк">да</span>':'нет')+kv('Дата сноса',h.demo_date?esc(String(h.demo_date).slice(0,10)):'')+kv('Распоряжение',h.act_number)+kv('Программа переселения',h.relocation_program)+kv('Аукцион',h.auction?'<span class="badge b-Истекает">да</span>':'нет')+kv('Без УК',h.no_uk?'<span class="badge b-Истекает">да</span>':'нет')+kv('Способ управления не определён',h.undefined?'<span class="badge b-Истекает">да</span>':'нет')+kv('Запрос ЕГРН',h.egrn_query?'<span class="badge b-Истекает">да</span>':'нет')+kv('Статус',h.status_text)+kv('Примечание',h.note)+'</div>';
     if(h.registry_info){
       html+='<div class="section"><h4><span class="sec-icon">📋</span>Реестр МКД с УК</h4><div class="body"><div class="full"><div class="kv">'+kv('Помещений',h.registry_info.premises)+kv('Последний капремонт',h.registry_info.cap_repair)+kv('Тех. состояние',h.registry_info.tech_state)+kv('Договор: начало',h.registry_info.contract_start)+kv('Договор: конец',h.registry_info.contract_end)+kv('Неисправности',h.registry_info.faults)+kv('Примечание',h.registry_info.reg_note)+kv('Источник',h.registry_info.source)+'</div></div></div></div>';
     } else if(h.registry_info_missing){
@@ -1087,10 +1251,94 @@ function mkdHouse(id){
     } else if(h.contacts_missing){
       html+='<div class="section"><h4><span class="sec-icon">👤</span>Контакты УК</h4><div class="body"><div class="full"><p class="muted">В базе нет таблицы <code>UKContact</code>.</p></div></div></div>';
     }
+    // Секция файлов МКД — загружается асинхронно после показа карточки
+    html+='<div class="section" id="mkdFilesSection"><h4><span class="sec-icon">📎</span>Фото и документы дома</h4><div class="body"><div class="full"><p class="muted">Загрузка...</p></div></div></div>';
     $('mMkd1Title').innerHTML='🏠 Карточка МКД';
     $('mMkd1Body').innerHTML=html;
     $('mMkd1Footer').innerHTML='<button class="gray" onclick="hide(\'mMkd1\')">Закрыть</button>'+(ROLE?'<button onclick="mkdHouseForm('+h.id+')">✏️ Изменить</button>':'')+(ROLE==='admin'?' <button class="red" onclick="mkdDelHouse('+h.id+')">🗑 Удалить</button>':'');
     show('mMkd1');
+    // асинхронно подгрузим файлы дома
+    loadMkdHouseFiles(h.id);
+  });
+}
+
+function loadMkdHouseFiles(hid){
+  api('GET','/api/mkd/house/'+hid+'/files',null,function(s,files){
+    if(s!==200||!files){files=[];}
+    var el=$('mkdFilesSection');
+    if(!el)return;
+    var photos=[],docs=[];
+    for(var i=0;i<files.length;i++){if(files[i].is_photo)photos.push(files[i]);else docs.push(files[i]);}
+    var html='<h4><span class="sec-icon">📎</span>Фото и документы дома <span class="muted" style="font-weight:400">('+files.length+')</span></h4><div class="body"><div class="full">';
+    if(photos.length>0){
+      html+='<div class="files">';
+      for(var i=0;i<photos.length;i++){var f=photos[i];
+        html+='<div class="file-item"><a href="/api/mkd/file/'+f.id+'" target="_blank"><img src="/api/mkd/file/'+f.id+'"></a><div class="nm"><a href="/api/mkd/file/'+f.id+'" target="_blank">'+esc(f.name)+'</a></div>';
+        if(ROLE)html+='<label style="display:block;margin-top:6px;font-size:11px"><input type="checkbox" class="mkd-file-check" value="'+f.id+'"> выбрать</label>';
+        html+='</div>';
+      }
+      html+='</div>';
+    }
+    if(ROLE){
+      if(docs.length>0){
+        html+='<h4 style="margin:14px 0 8px;font-size:12px;color:var(--fg2);text-transform:uppercase;letter-spacing:.05em">Документы ('+docs.length+')</h4><div class="files">';
+        for(var i=0;i<docs.length;i++){var f=docs[i];
+          html+='<div class="file-item"><div class="nm"><a href="/api/mkd/file/'+f.id+'" target="_blank">'+esc(f.name)+'</a></div><label style="display:block;margin-top:6px;font-size:11px"><input type="checkbox" class="mkd-file-check" value="'+f.id+'"> выбрать</label></div>';
+        }
+        html+='</div>';
+      }
+      html+='<div class="field" style="margin-top:14px"><label>Загрузить файлы (можно несколько, до 30 МБ каждый)</label><input type="file" id="mkdUpf" multiple></div>';
+      html+='<div class="field" style="margin-top:8px"><label>Или загрузить целую папку (с подпапками)</label><input type="file" id="mkdUpfDir" webkitdirectory directory multiple></div>';
+      html+='<div class="full"><button onclick="mkdUpload('+hid+')">Загрузить выбранные</button> <button class="red" onclick="mkdDelFilesSelected('+hid+')">Удалить выбранные</button></div>';
+      if(files.length===0)html+='<p class="muted" style="margin-top:8px">Файлов нет. Загрузите сканы договоров, акты, фотографии.</p>';
+    }else{
+      if(files.length===0)html+='<p class="muted">Файлов нет. Чтобы загрузить — войдите.</p>';
+      if(files.length>photos.length)html+='<p class="muted" style="margin-top:10px">Документы видны только после входа.</p>';
+    }
+    html+='</div></div></div>';
+    el.innerHTML=html;
+  });
+}
+function mkdUpload(hid){
+  // Собираем файлы из обоих input'ов: обычный multiple + папка (webkitdirectory)
+  var allFiles=[];
+  var upf=$('mkdUpf');
+  var upfDir=$('mkdUpfDir');
+  if(upf&&upf.files&&upf.files.length){
+    for(var i=0;i<upf.files.length;i++)allFiles.push(upf.files[i]);
+  }
+  if(upfDir&&upfDir.files&&upfDir.files.length){
+    for(var i=0;i<upfDir.files.length;i++)allFiles.push(upfDir.files[i]);
+  }
+  if(!allFiles.length){toast('Сначала выберите файл(ы) или папку.','warn');return;}
+  var fd=new FormData();
+  for(var i=0;i<allFiles.length;i++){
+    var f=allFiles[i];
+    var path=f.webkitRelativePath||f.name;
+    var safeName=path.replace(/\//g,'_').replace(/\\/g,'_');
+    var newFile=new File([f],safeName,{type:f.type||'application/octet-stream'});
+    fd.append('file',newFile);
+  }
+  toast('Загружаю файлов: '+allFiles.length+'...','info');
+  api('POST','/api/mkd/house/'+hid+'/files',fd,function(s,r){
+    if(s!==200){toast(r&&r.error||'Ошибка загрузки файла.','err');return;}
+    if(upf)upf.value='';
+    if(upfDir)upfDir.value='';
+    loadMkdHouseFiles(hid);
+    var msg='Загружено: '+r.added;
+    if(r.skipped&&r.skipped.length)msg+='. Пропущено: '+r.skipped.length;
+    toast(msg,'ok');
+  },true);
+}
+function mkdDelFilesSelected(hid){
+  var checks=document.querySelectorAll('.mkd-file-check:checked');
+  if(!checks.length){toast('Отметьте файлы галочками для удаления.','warn');return;}
+  var ids=[];
+  for(var i=0;i<checks.length;i++)ids.push(parseInt(checks[i].value,10));
+  if(!confirm('Удалить файлов: '+ids.length+'?'))return;
+  api('POST','/api/mkd/house/'+hid+'/files/delete',{ids:ids},function(s,r){
+    if(s!==200){toast(r&&r.error||'Ошибка удаления.','err');return;}
+    loadMkdHouseFiles(hid);toast('Удалено файлов: '+(r&&r.count||0),'ok');
   });
 }
 function kv(k,v){return (v===null||v===undefined||v==='')?'':'<div>'+k+'</div><div>'+v+'</div>';}
@@ -1293,11 +1541,10 @@ $('bMapEdit').onclick=function(){
   }
 };
 $('bMapDone').onclick=function(){
-  MAP_MODE='view';MAP_ADDING=false;
-  $('mapMode').textContent='просмотр';
-  $('bMapAddPt').style.display='none';$('bMapDone').style.display='none';
+  // кнопка «Готово» — отмена любого режима (добавление/перемещение/редактирование)
+  cancelMapAction();
+  MAP_MODE='view';
   $('bMapEdit').style.display='';
-  if(MAP)MAP.getContainer().style.cursor='';
 };
 $('bMapAddPt').onclick=function(){
   if(MAP_KIND!=='nto'){toast('Добавление точек работает в режиме НТО','warn');return;}
@@ -1311,6 +1558,56 @@ $('bMapAddPt').onclick=function(){
   }
 };
 $('bMapRefresh').onclick=function(){loadMapMarkers();toast('Карта обновлена','info');};
+// Динамический поиск по карте: фильтрует видимые точки
+var MAP_SEARCH='';
+var mapSearchTm=null;
+function applyMapSearch(){
+  if(!MAP_MARKERS.length)return;
+  var q=MAP_SEARCH.toLowerCase().trim();
+  var shown=0,hidden=0;
+  for(var i=0;i<MAP_MARKERS.length;i++){
+    var m=MAP_MARKERS[i]._pointData;
+    var hay=((m.label||'')+' '+(m.description||'')+' '+(m.object_type||'')+' '+(m.uk_name||'')).toLowerCase();
+    if(!q||hay.indexOf(q)>=0){
+      if(!MAP.hasLayer(MAP_MARKERS[i]))MAP_MARKERS[i].addTo(MAP);
+      shown++;
+    }else{
+      if(MAP.hasLayer(MAP_MARKERS[i]))MAP.removeLayer(MAP_MARKERS[i]);
+      hidden++;
+    }
+  }
+  var info=$('mapSearchInfo');
+  if(info){
+    if(!q)info.textContent='';
+    else info.textContent='найдено: '+shown+' (скрыто '+hidden+')';
+  }
+  // если нашли ровно 1 — центрировать на нём
+  if(q&&shown===1){
+    for(var i=0;i<MAP_MARKERS.length;i++){
+      if(MAP.hasLayer(MAP_MARKERS[i])){
+        MAP.panTo(MAP_MARKERS[i].getLatLng(),{animate:true});
+        MAP_MARKERS[i].openPopup();
+        break;
+      }
+    }
+  } else if(q&&shown>1){
+    // центрировать на видимых
+    var bounds=L.latLngBounds([]);
+    for(var i=0;i<MAP_MARKERS.length;i++){
+      if(MAP.hasLayer(MAP_MARKERS[i]))bounds.extend(MAP_MARKERS[i].getLatLng());
+    }
+    if(bounds.isValid())MAP.fitBounds(bounds,{padding:[50,50],maxZoom:16});
+  }
+}
+var mapSearchInput=$('mapSearch');
+if(mapSearchInput){
+  mapSearchInput.oninput=function(){
+    MAP_SEARCH=mapSearchInput.value;
+    clearTimeout(mapSearchTm);
+    mapSearchTm=setTimeout(applyMapSearch,250);
+  };
+  // при переключении НТО/МКД — очистить поиск
+}
 var tm=null;
 $('q').oninput=function(){clearTimeout(tm);tm=setTimeout(load,300);};
 $('fScheme').onchange=load;$('fState').onchange=load;

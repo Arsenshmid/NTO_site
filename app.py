@@ -42,8 +42,16 @@ BAD_EXT = set('exe bat cmd com msi scr js vbs ps1 dll jar sh lnk'.split())
 # рабочей директории, и на некоторых запусках файлы статики (в т.ч. okrug_boundary.geojson) дают 404.
 app = Flask(__name__, static_folder=os.path.join(BASE, 'static'), static_url_path='/static')
 app.secret_key = CFG['secret']
-app.config['MAX_CONTENT_LENGTH'] = 30 * 1024 * 1024
+# Лимит на размер ОДНОГО HTTP-запроса (включая все файлы в нём).
+# 500 МБ — достаточно для пачки файлов или целой папки с документами.
+# Если загрузить больше — Flask вернёт 413, и пользователь увидит понятное сообщение.
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
 app.config.update(SESSION_COOKIE_SAMESITE="Lax", PERMANENT_SESSION_LIFETIME=datetime.timedelta(hours=12))
+
+# Обработка ошибки 413 (файл слишком большой) — возвращаем JSON, а не HTML
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify(error='Файлы слишком большие. Суммарный размер одного запроса — до 500 МБ. Загрузите файлы меньшими порциями.'), 413
 
 # ============ Подключение к базам ============
 def pick_driver():
@@ -408,20 +416,66 @@ def nto_del(i):
 @app.route('/api/nto/<int:i>/files', methods=['POST'])
 @need('editor')
 def file_add(i):
+    """Загрузка одного или нескольких файлов к НТО.
+       Принимает multipart/form-data с одним или несколькими полями 'file'.
+       Возвращает {added: N, ids: [...], skipped: [...]}."""
     if not rows('SELECT id FROM nto_object WHERE id=? AND is_deleted=0', (i,)): abort(404)
-    f = request.files.get('file')
-    if not f or not f.filename: return jsonify(error='Файл не выбран.'), 400
-    ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
-    if ext in BAD_EXT or not ext: return jsonify(error='Этот тип файла загружать нельзя.'), 400
-    stored = uuid.uuid4().hex + '.' + ext
+    files = request.files.getlist('file')
+    if not files or all(not f.filename for f in files):
+        return jsonify(error='Файлы не выбраны.'), 400
     folder = os.path.join(UPLOAD, 'nto_%d' % i)
     if not os.path.isdir(folder): os.makedirs(folder)
-    f.save(os.path.join(folder, stored))
-    photo = 1 if ext in ('jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic') else 0
-    fid = insert('nto_file', dict(object_id=i, file_name=f.filename[:300], stored_name=stored, caption=(request.form.get('caption') or '')[:300],
-                 is_photo=photo, size_bytes=os.path.getsize(os.path.join(folder, stored)), uploaded_by=session.get('name')))
-    log_nto('файл добавлен', i, None, {'file': f.filename})
-    return jsonify(id=fid)
+    added_ids = []
+    skipped = []
+    for f in files:
+        if not f or not f.filename:
+            continue
+        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
+        if not ext or ext in BAD_EXT:
+            skipped.append({'name': f.filename, 'reason': 'недопустимый тип'})
+            continue
+        stored = uuid.uuid4().hex + '.' + ext
+        try:
+            f.save(os.path.join(folder, stored))
+            photo = 1 if ext in ('jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic') else 0
+            fid = insert('nto_file', dict(object_id=i, file_name=f.filename[:300], stored_name=stored,
+                         caption='', is_photo=photo,
+                         size_bytes=os.path.getsize(os.path.join(folder, stored)),
+                         uploaded_by=session.get('name')))
+            added_ids.append(fid)
+            log_nto('файл добавлен', i, None, {'file': f.filename})
+        except Exception as e:
+            skipped.append({'name': f.filename, 'reason': str(e)[:100]})
+    return jsonify(added=len(added_ids), ids=added_ids, skipped=skipped)
+
+@app.route('/api/nto/<int:i>/files/delete', methods=['POST'])
+@need('editor')
+def nto_files_delete(i):
+    """Удаление нескольких файлов НТО сразу.
+       Принимает JSON: {"ids": [1, 2, 3]}.
+       Файлы помечаются is_deleted=1 (мягкое удаление), физически переносятся в TRASH."""
+    if not rows('SELECT id FROM nto_object WHERE id=? AND is_deleted=0', (i,)): abort(404)
+    d = request.get_json() or {}
+    ids = d.get('ids') or []
+    if not ids:
+        return jsonify(error='Список ids пуст.'), 400
+    deleted = []
+    for fid in ids:
+        try:
+            fid = int(fid)
+            r = rows('SELECT * FROM nto_file WHERE id=? AND object_id=? AND is_deleted=0', (fid, i))
+            if not r:
+                continue
+            r = r[0]
+            src = os.path.join(UPLOAD, 'nto_%d' % r['object_id'], r['stored_name'])
+            if os.path.exists(src):
+                shutil.move(src, os.path.join(TRASH, '%d_%s' % (fid, r['stored_name'])))
+            run('UPDATE nto_file SET is_deleted=1 WHERE id=?', (fid,))
+            log_nto('файл удалён', r['object_id'], {'file': r['file_name']}, None)
+            deleted.append(fid)
+        except Exception as e:
+            print('file delete error fid=%s: %s' % (fid, e))
+    return jsonify(ok=1, deleted=deleted, count=len(deleted))
 
 def frow(fid):
     r = rows('SELECT * FROM nto_file WHERE id=? AND is_deleted=0', (fid,))
@@ -472,19 +526,122 @@ def map_points_list():
 @app.route('/api/map_markers')
 def map_markers_list():
     """Endpoint для Leaflet-карты. Параметр kind: nto (по умолчанию) | mkd | all.
-       Возвращает маркеры с lat/lon из нескольких источников:
-       1) Кастомные точки из nto_map_point (где заполнены lat/lon), в т.ч. точки МКД (object_type='mkd')
-       2) НТО-объекты, у которых заполнены lat и lon (кроме тех, что уже покрыты кастомной точкой)
-       Для точек МКД подтягиваются данные дома (УК, этажность) из AvtodorDB.House.
-       Карта зеркалит базы SQL Server: точки, привязанные к удалённым НТО, не отдаются,
-       а точки МКД, для которых дом отсутствует в AvtodorDB.House, скрываются.
+       kind=nto → точки НТО из NtoDB: 1) кастомные точки nto_map_point с lat/lon,
+       2) НТО-объекты (nto_object) с lat/lon.
+       kind=mkd → точки МКД напрямую из AvtodorDB.House (с lat/lon, не снесённые).
+       Карта зеркалит базы SQL Server: дом есть в AvtodorDB с координатами → показываем;
+       нет в базе или снесён → не показываем. Аналогично для НТО: удалённые НТО скрыты.
+       Для МКД нужна миграция 11 (добавляет колонки Lat, Lon, IsDemolished и др. в House).
     """
     kind = (request.args.get('kind') or 'nto').strip().lower()
     if kind not in ('nto', 'mkd', 'all'):
         kind = 'nto'
     out = []
     covered_object_ids = set()
-    # 1) Кастомные точки (в т.ч. МКД)
+    # ============ РЕЖИМ МКД — точки берём напрямую из AvtodorDB.House ============
+    # (НЕ из nto_map_point!) — карта зеркалит базу МКД: дом есть в AvtodorDB.House
+    # с координатами → показываем; нет в базе → не показываем; снесён → не показываем.
+    # Чтобы работало, нужна миграция 11 (добавляет колонки Lat, Lon, IsDemolished и т.д.).
+    if kind in ('mkd', 'all'):
+        try:
+            # проверим, что колонки Lat/Lon добавлены (миграция 11 выполнена)
+            cols_ok = rows(
+                "SELECT COUNT(*) AS c FROM sys.columns "
+                "WHERE object_id = OBJECT_ID(N'AvtodorDB.dbo.House') "
+                "AND name IN ('Lat','Lon')", db='mkd')
+            if cols_ok and cols_ok[0]['c'] >= 2:
+                # выбираем дома с координатами, кроме снесённых
+                sql = (
+                    "SELECT h.HouseID AS hid, h.Street, h.HouseNo, h.FullAddress, "
+                    "h.Floors, h.FlatsCount, h.YearBuilt, h.IsEmergency, "
+                    "h.IsDemolished, h.DemolitionDate, h.ActNumber, h.RelocationProgram, "
+                    "h.IsResettled, h.Quarter, h.ResidentsCount, h.Area, "
+                    "h.HouseType, h.HeatingType, h.StatusText, h.Note, "
+                    "h.IsAuction, h.IsNoUk, h.IsUndefined, h.IsEgrnQuery, h.CoordsApprox, "
+                    "h.Lat, h.Lon, h.UKName, uk.Name AS uk_name "
+                    "FROM AvtodorDB.dbo.House h "
+                    "LEFT JOIN AvtodorDB.dbo.UK uk ON uk.UKID = h.UKID "
+                    "WHERE h.Lat IS NOT NULL AND h.Lon IS NOT NULL "
+                    "  AND ISNULL(h.IsDemolished, 0) = 0 "
+                    "  AND ISNULL(h.IsHiddenFromMap, 0) = 0 "
+                    "ORDER BY h.Street, h.HouseNo")
+                houses = rows(sql, db='mkd')
+                for h in houses:
+                    label_parts = []
+                    if h.get('Street'):
+                        label_parts.append(str(h['Street']).strip())
+                    if h.get('HouseNo'):
+                        label_parts.append(str(h['HouseNo']).strip())
+                    label = ', '.join(label_parts) or (h.get('FullAddress') or ('дом #' + str(h['hid'])))
+                    desc = []
+                    uk = h.get('uk_name') or h.get('UKName')
+                    if uk:
+                        desc.append('УК: ' + str(uk))
+                    if h.get('HouseType'):
+                        desc.append(str(h['HouseType']))
+                    if h.get('HeatingType'):
+                        desc.append('отопление: ' + str(h['HeatingType']))
+                    if h.get('Floors'):
+                        desc.append('этажей: ' + str(h['Floors']))
+                    if h.get('FlatsCount'):
+                        desc.append('квартир: ' + str(h['FlatsCount']))
+                    if h.get('ResidentsCount'):
+                        desc.append('жильцов: ' + str(h['ResidentsCount']))
+                    if h.get('Area'):
+                        desc.append('площадь: ' + str(h['Area']) + ' м²')
+                    if h.get('YearBuilt'):
+                        desc.append('год: ' + str(h['YearBuilt']))
+                    if h.get('Quarter'):
+                        desc.append('квартал: ' + str(h['Quarter']))
+                    if h.get('IsEmergency'):
+                        desc.append('АВАРИЙНЫЙ')
+                        if h.get('ActNumber'):
+                            desc.append('распоряжение: ' + str(h['ActNumber']))
+                        if h.get('RelocationProgram'):
+                            desc.append('программа: ' + str(h['RelocationProgram']))
+                        if h.get('DemolitionDate'):
+                            desc.append('снос: ' + str(h['DemolitionDate'])[:10])
+                        if h.get('IsResettled'):
+                            desc.append('РАССЕЛЁН')
+                    if h.get('IsAuction'):
+                        desc.append('АУКЦИОН (выбор УК)')
+                    if h.get('IsNoUk'):
+                        desc.append('БЕЗ УК')
+                    if h.get('IsUndefined'):
+                        desc.append('способ управления не определён')
+                    if h.get('IsEgrnQuery'):
+                        desc.append('запрос ЕГРН')
+                    if h.get('Note'):
+                        desc.append('примечание: ' + str(h['Note']))
+                    if h.get('CoordsApprox'):
+                        desc.append('координаты приблизительные')
+                    out.append({
+                        'source': 'mkd',
+                        'id': h['hid'],
+                        'object_id': h['hid'],
+                        'object_type': 'mkd',
+                        'lat': float(h['Lat']),
+                        'lon': float(h['Lon']),
+                        'label': label,
+                        'color': 'violet',
+                        'is_test': 0,
+                        'description': '\n'.join(desc),
+                        'emergency': 1 if h.get('IsEmergency') else 0,
+                        'demolished': 1 if h.get('IsDemolished') else 0,
+                        'resettled': 1 if h.get('IsResettled') else 0,
+                        'auction': 1 if h.get('IsAuction') else 0,
+                        'no_uk': 1 if h.get('IsNoUk') else 0,
+                        'coords_approx': 1 if h.get('CoordsApprox') else 0,
+                        'uk_name': uk or '',
+                    })
+            else:
+                print('map_markers: колонок Lat/Lon нет в AvtodorDB.House — выполните миграцию 11')
+        except Exception as e:
+            print('map_markers mkd error (AvtodorDB недоступна?):', e)
+        if kind == 'mkd':
+            return jsonify(out)  # для МКД только дома из AvtodorDB, без НТО
+    # ============ РЕЖИМ НТО — точки из NtoDB ============
+    # (только для НТО; object_type='mkd' больше НЕ используется для карты)
     try:
         where = 'WHERE lat IS NOT NULL AND lon IS NOT NULL'
         if kind == 'nto':
@@ -493,13 +650,11 @@ def map_markers_list():
             where += (" AND ISNULL(object_type, 'nto') <> 'mkd'"
                       " AND (object_id IS NULL OR EXISTS (SELECT 1 FROM nto_object o"
                       " WHERE o.id = nto_map_point.object_id AND o.is_deleted = 0))")
-        elif kind == 'mkd':
-            where += " AND object_type = 'mkd'"
         pts = rows('SELECT id, object_id, object_type, lat, lon, label, color, is_test, description, updated_at '
                    'FROM nto_map_point ' + where + ' ORDER BY id')
         for r in pts:
             out.append({
-                'source': 'custom' if (r.get('object_type') or 'nto') != 'mkd' else 'mkd',
+                'source': 'custom',
                 'id': r['id'],
                 'object_id': r.get('object_id'),
                 'object_type': r.get('object_type') or 'nto',
@@ -510,52 +665,11 @@ def map_markers_list():
                 'is_test': 1 if r.get('is_test') else 0,
                 'description': r.get('description') or '',
             })
-            if r.get('object_id') and (r.get('object_type') or 'nto') != 'mkd':
+            if r.get('object_id'):
                 covered_object_ids.add(r['object_id'])
     except Exception as e:
         print('map_markers custom error:', e)
-    # 1а) Обогащение точек МКД данными домов из AvtodorDB (УК, адрес, этажность...)
-    mkd_markers = [m for m in out if m['source'] == 'mkd' and m.get('object_id')]
-    if mkd_markers:
-        try:
-            ids = sorted({str(m['object_id']) for m in mkd_markers})
-            id_list = ','.join(ids)
-            houses = rows(
-                'SELECT h.HouseID AS hid, h.Street, h.HouseNo, h.FullAddress, h.Floors, h.FlatsCount, '
-                'h.YearBuilt, h.IsEmergency, uk.Name AS uk_name '
-                'FROM dbo.House h LEFT JOIN dbo.UK uk ON uk.UKID = h.UKID '
-                'WHERE h.HouseID IN (' + id_list + ')', db='mkd')
-            by_id = {h['hid']: h for h in houses}
-            orphan_pts = set()   # точки МКД, для которых дома нет в базе AvtodorDB
-            for m in mkd_markers:
-                h = by_id.get(m['object_id'])
-                if not h:
-                    orphan_pts.add(id(m))
-                    continue
-                if h.get('FullAddress'):
-                    m['label'] = h['FullAddress']
-                desc = []
-                if h.get('uk_name'):
-                    desc.append('УК: ' + str(h['uk_name']))
-                if h.get('Floors'):
-                    desc.append('этажей: ' + str(h['Floors']))
-                if h.get('FlatsCount'):
-                    desc.append('квартир: ' + str(h['FlatsCount']))
-                if h.get('YearBuilt'):
-                    desc.append('год: ' + str(h['YearBuilt']))
-                if h.get('IsEmergency'):
-                    desc.append('АВАРИЙНЫЙ')
-                if desc:
-                    m['description'] = ('\n'.join(desc) + ('\n' + m['description'] if m.get('description') else '')).strip()
-                m['emergency'] = 1 if h.get('IsEmergency') else 0
-            # карта зеркалит базу МКД: точки, для которых дома нет в AvtodorDB,
-            # из ответа убираем (показывать нечего — дома в базе нет)
-            if orphan_pts:
-                out = [m for m in out if id(m) not in orphan_pts]
-                print('map_markers: скрыто точек МКД без дома в AvtodorDB:', len(orphan_pts))
-        except Exception as e:
-            print('map_markers mkd enrich error (AvtodorDB недоступна?):', e)
-    # 2) НТО-объекты с координатами (пропускаем те, что уже показаны кастомной точкой)
+    # ============ НТО-объекты с координатами (пропускаем те, что уже показаны) ============
     if kind in ('nto', 'all'):
         try:
             objs = rows('SELECT id, scheme_num, in_scheme, address, owner_name, inn, specialization, lat, lon '
@@ -579,6 +693,16 @@ def map_markers_list():
             print('map_markers nto error:', e)
     return jsonify(out)
 
+def _check_point_link(oid, object_type):
+    """Проверка ссылки точки карты на НТО. Внешний ключ object_id -> nto_object
+    снят миграцией 10 (точкам МКД в object_id пишется номер дома из AvtodorDB,
+    а не номер НТО), поэтому корректность ссылки проверяем здесь, на уровне приложения."""
+    if not oid or (object_type or 'nto') == 'mkd':
+        return None
+    if not rows('SELECT id FROM nto_object WHERE id=? AND is_deleted=0', (oid,)):
+        return 'НТО №%s не найден в базе (или удалён) — проверьте номер объекта.' % oid
+    return None
+
 @app.route('/api/map_points', methods=['POST'])
 @need('editor')
 def map_point_add():
@@ -596,6 +720,8 @@ def map_point_add():
     else:
         return jsonify(error='Нужны lat/lon или x_pct/y_pct'), 400
     rec['object_id'] = int(d['object_id']) if d.get('object_id') else None
+    err = _check_point_link(rec['object_id'], rec.get('object_type', 'nto'))
+    if err: return jsonify(error=err), 400
     rec['label'] = (d.get('label') or '')[:200] or None
     rec['color'] = (d.get('color') or 'red')[:20]
     rec['description'] = (d.get('description') or '')[:500] or None
@@ -622,7 +748,12 @@ def map_point_edit(pid):
                         return jsonify(error='lat должна быть -90..90'), 400
                     if k in ('lon',) and not (-180 <= v <= 180):
                         return jsonify(error='lon должна быть -180..180'), 400
-            if k == 'object_id': v = int(v) if v else None
+            if k == 'object_id':
+                v = int(v) if v else None
+                cur_row = rows("SELECT ISNULL(object_type, 'nto') AS t FROM nto_map_point WHERE id=?", (pid,))
+                cur_type = cur_row[0]['t'] if cur_row else 'nto'
+                err = _check_point_link(v, d.get('object_type') or cur_type)
+                if err: return jsonify(error=err), 400
             if k == 'label': v = (v or '')[:200] or None
             if k == 'color': v = (v or 'red')[:20]
             if k == 'object_type': v = (v or 'nto')[:10]
@@ -759,7 +890,14 @@ SELECT h.HouseID AS id, h.FullAddress AS address, h.Street AS street, h.HouseNo 
        h.HeatSupplier AS heat_supplier, h.ServiceOrg AS service_org, h.MunicipalNote AS municipal_note,
        h.YearBuilt AS year_built, h.Floors AS floors, h.FlatsCount AS flats, h.WallMaterial AS wall,
        h.MunicipalPercent AS municipal_percent, h.IsEmergency AS emergency, h.IsAuction AS auction, h.Note AS note,
-       0 AS no_uk
+       h.Lat AS lat, h.Lon AS lon,
+       h.IsDemolished AS demolished, h.DemolitionDate AS demo_date, h.ActNumber AS act_number,
+       h.RelocationProgram AS relocation_program, h.IsResettled AS resettled, h.Quarter AS quarter,
+       h.ResidentsCount AS residents, h.Area AS area,
+       h.HouseType AS house_type_text, h.HeatingType AS heating_text, h.StatusText AS status_text,
+       h.IsNoUk AS no_uk, h.IsUndefined AS undefined, h.IsEgrnQuery AS egrn_query,
+       h.CoordsApprox AS coords_approx, h.UKName AS uk_name,
+       0 AS no_uk_legacy
 FROM dbo.House h
 LEFT JOIN dbo.UK uk ON uk.UKID = h.UKID
 LEFT JOIN dbo.HouseType ht ON ht.HouseTypeID = h.HouseTypeID
@@ -767,10 +905,15 @@ LEFT JOIN dbo.HeatingType he ON he.HeatingTypeID = h.HeatingTypeID
 """
 
 def mkd_base_sql():
-    """Вернуть SQL с LEFT JOIN HouseNoUK если таблица существует, иначе без него."""
+    """Вернуть SQL с LEFT JOIN HouseNoUK если таблица существует, иначе без него.
+       После миграции 11 колонка IsNoUk в самой таблице House — основной источник
+       признака «без УК». HouseNoUK (если есть) — дополнительная проверка."""
     if mkd_has('HouseNoUK'):
-        return BASE_MKD_SQL_CORE.replace('0 AS no_uk', 'CASE WHEN n.HouseID IS NULL THEN 0 ELSE 1 END AS no_uk') + \
-               'LEFT JOIN dbo.HouseNoUK n ON n.HouseID = h.HouseID\n'
+        # объединяем: IsNoUk из House ИЛИ наличие записи в HouseNoUK
+        return BASE_MKD_SQL_CORE.replace(
+            'h.IsNoUk AS no_uk,',
+            'CASE WHEN ISNULL(h.IsNoUk, 0) = 1 OR n.HouseID IS NOT NULL THEN 1 ELSE 0 END AS no_uk,'
+        ) + 'LEFT JOIN dbo.HouseNoUK n ON n.HouseID = h.HouseID\n'
     return BASE_MKD_SQL_CORE
 
 # Совместимость: оставим старое имя как ссылку (используется в mkd_all и mkd_house через mkd_base_sql())
@@ -977,7 +1120,11 @@ def mkd_house_delete(hid):
         old = row_dict(cur)
         if not old: raise ValueError("Такого дома уже нет.")
         snap = {k: v for k, v in old.items() if v is not None and k != "FullAddress"}
+        # перед обращением к каждой связанной таблице проверяем, что она существует
+        # (в базе пользователя части из них может не быть — это норма)
         for t in ("HouseRegistryInfo", "HouseEmergency", "HouseNoUK"):
+            if not mkd_has(t):
+                continue  # таблицы нет — пропускаем (и SELECT, и DELETE)
             cur.execute("SELECT * FROM dbo." + t + " WHERE HouseID = ?", hid)
             r = row_dict(cur)
             if r: snap[t] = {k: v for k, v in r.items() if v is not None}
@@ -990,6 +1137,217 @@ def mkd_house_delete(hid):
         return jsonify({'error': str(e)}), 400
     drop_cache()
     return jsonify({'ok': True})
+
+@app.route('/api/mkd/house/<int:hid>/toggle_map_visibility', methods=['POST'])
+@need('editor')
+def mkd_house_toggle_visibility(hid):
+    """Скрыть дом с карты (или показать обратно). Дом остаётся в базе.
+       Полезно для домов, которые не относятся к Автодорожному округу —
+       их не нужно видеть на карте, но удалять из базы не хочется."""
+    if not mkd_has('House'):
+        return jsonify({'error': 'В базе AvtodorDB нет таблицы House.'}), 400
+    # если колонки IsHiddenFromMap нет — добавим её на лету
+    if not rows("SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'AvtodorDB.dbo.House') "
+                "AND name = N'IsHiddenFromMap'", db='mkd'):
+        try:
+            run('ALTER TABLE AvtodorDB.dbo.House ADD IsHiddenFromMap BIT NOT NULL DEFAULT 0', db='mkd')
+        except Exception as e:
+            print('Не удалось добавить колонку IsHiddenFromMap:', e)
+    try:
+        cur_state = rows("SELECT ISNULL(IsHiddenFromMap, 0) AS v FROM AvtodorDB.dbo.House WHERE HouseID = ?", (hid,), db='mkd')
+        if not cur_state:
+            return jsonify({'error': 'Дом не найден.'}), 404
+        new_v = 0 if cur_state[0]['v'] else 1
+        run("UPDATE AvtodorDB.dbo.House SET IsHiddenFromMap = ? WHERE HouseID = ?", (new_v, hid), db='mkd')
+        action = 'скрыт с карты' if new_v else 'показан на карте'
+        drop_cache()
+        return jsonify({'ok': True, 'hidden': bool(new_v), 'action': action})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+@app.route('/api/mkd/house/<int:hid>/move', methods=['PUT'])
+@need('editor')
+def mkd_house_move(hid):
+    """Переместить дом на карте в новые координаты.
+       Принимает JSON: {"lat": 62.028, "lon": 129.731, "approx": false}
+       Если approx=true — координаты приблизительные (центр улицы)."""
+    if not mkd_has('House'):
+        return jsonify({'error': 'В базе AvtodorDB нет таблицы House.'}), 400
+    d = request.get_json() or {}
+    if 'lat' not in d or 'lon' not in d:
+        return jsonify({'error': 'Нужны lat и lon.'}), 400
+    try:
+        lat = float(d['lat'])
+        lon = float(d['lon'])
+    except (TypeError, ValueError):
+        return jsonify({'error': 'lat/lon должны быть числами.'}), 400
+    if not (-90 <= lat <= 90):
+        return jsonify({'error': 'lat должна быть -90..90'}), 400
+    if not (-180 <= lon <= 180):
+        return jsonify({'error': 'lon должна быть -180..180'}), 400
+    approx = 1 if d.get('approx') else 0
+    # проверим, что дом существует
+    existing = rows("SELECT HouseID, Street, HouseNo FROM AvtodorDB.dbo.House WHERE HouseID = ?", (hid,), db='mkd')
+    if not existing:
+        return jsonify({'error': 'Дом не найден.'}), 404
+    # если колонки CoordsApprox нет — добавим
+    if not rows("SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'AvtodorDB.dbo.House') "
+                "AND name = N'CoordsApprox'", db='mkd'):
+        try:
+            run('ALTER TABLE AvtodorDB.dbo.House ADD CoordsApprox BIT NOT NULL DEFAULT 0', db='mkd')
+        except Exception as e:
+            print('Не удалось добавить колонку CoordsApprox:', e)
+    run("UPDATE AvtodorDB.dbo.House SET Lat = ?, Lon = ?, CoordsApprox = ? WHERE HouseID = ?",
+        (lat, lon, approx, hid), db='mkd')
+    drop_cache()
+    h = existing[0]
+    label = ((h.get('Street') or '') + ' ' + (h.get('HouseNo') or '')).strip()
+    return jsonify({'ok': True, 'lat': lat, 'lon': lon, 'approx': approx,
+                    'message': 'Координаты дома ' + label + ' обновлены.'})
+
+@app.route('/api/mkd/house/<int:hid>/coords', methods=['GET'])
+@need('editor')
+def mkd_house_coords(hid):
+    """Получить текущие координаты дома (для отображения при перемещении)."""
+    if not mkd_has('House'):
+        return jsonify({'error': 'В базе AvtodorDB нет таблицы House.'}), 400
+    r = rows("SELECT Lat, Lon, ISNULL(CoordsApprox, 0) AS approx FROM AvtodorDB.dbo.House WHERE HouseID = ?",
+             (hid,), db='mkd')
+    if not r:
+        return jsonify({'error': 'Дом не найден.'}), 404
+    return jsonify({'lat': float(r[0]['Lat']) if r[0].get('Lat') else None,
+                    'lon': float(r[0]['Lon']) if r[0].get('Lon') else None,
+                    'approx': bool(r[0]['approx'])})
+
+# ============ Файлы МКД (множественная загрузка, любое расширение) ============
+# Хранятся в AvtodorDB.dbo.HouseFile (создаётся при первом обращении)
+# и физически — в uploads/mkd_<houseID>/. Физически та же папка UPLOAD,
+# что и для НТО — чтобы было одно место для бэкапа.
+
+def _ensure_mkd_files_table():
+    """Создать таблицу HouseFile в AvtodorDB, если её нет. Идемпотентно."""
+    if not mkd_has('House'):
+        return False
+    if not mkd_has('HouseFile'):
+        try:
+            run("""CREATE TABLE AvtodorDB.dbo.HouseFile (
+                FileID INT IDENTITY(1,1) PRIMARY KEY,
+                HouseID INT NOT NULL,
+                FileName NVARCHAR(300) NOT NULL,
+                StoredName NVARCHAR(300) NOT NULL,
+                IsPhoto BIT NOT NULL DEFAULT 0,
+                SizeBytes BIGINT NULL,
+                UploadedBy NVARCHAR(100) NULL,
+                UploadedAt DATETIME2 NOT NULL DEFAULT SYSDATETIME(),
+                IsDeleted BIT NOT NULL DEFAULT 0
+            )""", db='mkd')
+            # внешний ключ не ставим — HouseID может ссылаться на AvtodorDB.House,
+            # но в случае если база одна и та же — это работает; если нет — мягкая ссылка.
+        except Exception as e:
+            print('Не удалось создать таблицу HouseFile:', e)
+            return False
+    return True
+
+@app.route('/api/mkd/house/<int:hid>/files', methods=['GET'])
+def mkd_files_list(hid):
+    """Список файлов дома МКД."""
+    if not _ensure_mkd_files_table():
+        return jsonify([])
+    try:
+        r = rows("SELECT FileID AS id, FileName AS name, IsPhoto AS is_photo, "
+                 "SizeBytes AS size, UploadedBy AS by, UploadedAt AS at "
+                 "FROM AvtodorDB.dbo.HouseFile WHERE HouseID = ? AND IsDeleted = 0 "
+                 "ORDER BY FileID", (hid,), db='mkd')
+        return jsonify([{k: fmt(v) for k, v in row.items()} for row in r])
+    except Exception as e:
+        print('mkd files list error:', e)
+        return jsonify([])
+
+@app.route('/api/mkd/house/<int:hid>/files', methods=['POST'])
+@need('editor')
+def mkd_files_add(hid):
+    """Загрузка одного или нескольких файлов к дому МКД."""
+    if not mkd_has('House'):
+        return jsonify({'error': 'В базе AvtodorDB нет таблицы House.'}), 400
+    if not rows("SELECT HouseID FROM AvtodorDB.dbo.House WHERE HouseID = ?", (hid,), db='mkd'):
+        return jsonify({'error': 'Дом не найден.'}), 404
+    if not _ensure_mkd_files_table():
+        return jsonify({'error': 'Не удалось создать таблицу HouseFile.'}), 500
+    files = request.files.getlist('file')
+    if not files or all(not f.filename for f in files):
+        return jsonify({'error': 'Файлы не выбраны.'}), 400
+    folder = os.path.join(UPLOAD, 'mkd_%d' % hid)
+    if not os.path.isdir(folder): os.makedirs(folder)
+    added_ids = []
+    skipped = []
+    for f in files:
+        if not f or not f.filename:
+            continue
+        ext = f.filename.rsplit('.', 1)[-1].lower() if '.' in f.filename else ''
+        if not ext or ext in BAD_EXT:
+            skipped.append({'name': f.filename, 'reason': 'недопустимый тип'})
+            continue
+        stored = uuid.uuid4().hex + '.' + ext
+        try:
+            f.save(os.path.join(folder, stored))
+            photo = 1 if ext in ('jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic') else 0
+            size = os.path.getsize(os.path.join(folder, stored))
+            # используем прямую вставку, т.к. insert() для NtoDB
+            _name = f.filename[:300]
+            _by = session.get('name')
+            def _do_insert(cur, _hid=hid, _name=_name, _stored=stored, _photo=photo, _size=size, _by=_by):
+                cur.execute("INSERT INTO dbo.HouseFile (HouseID, FileName, StoredName, IsPhoto, SizeBytes, UploadedBy) "
+                            "OUTPUT INSERTED.FileID VALUES (?, ?, ?, ?, ?, ?)",
+                            (_hid, _name, _stored, _photo, _size, _by))
+                return cur.fetchone()[0]
+            new_id = run_tx_mkd(_do_insert)
+            added_ids.append(new_id)
+        except Exception as e:
+            skipped.append({'name': f.filename, 'reason': str(e)[:100]})
+    return jsonify(added=len(added_ids), ids=added_ids, skipped=skipped)
+
+@app.route('/api/mkd/house/<int:hid>/files/delete', methods=['POST'])
+@need('editor')
+def mkd_files_delete(hid):
+    """Удаление нескольких файлов МКД сразу. JSON: {"ids": [1,2,3]}."""
+    if not mkd_has('HouseFile'):
+        return jsonify({'error': 'Таблицы HouseFile нет — удалять нечего.'}), 400
+    d = request.get_json() or {}
+    ids = d.get('ids') or []
+    if not ids:
+        return jsonify({'error': 'Список ids пуст.'}), 400
+    deleted = []
+    for fid in ids:
+        try:
+            fid = int(fid)
+            r = rows("SELECT * FROM AvtodorDB.dbo.HouseFile WHERE FileID = ? AND HouseID = ? AND IsDeleted = 0",
+                     (fid, hid), db='mkd')
+            if not r:
+                continue
+            r = r[0]
+            src = os.path.join(UPLOAD, 'mkd_%d' % r['HouseID'], r['StoredName'])
+            if os.path.exists(src):
+                shutil.move(src, os.path.join(TRASH, 'mkd_%d_%s' % (fid, r['StoredName'])))
+            run("UPDATE AvtodorDB.dbo.HouseFile SET IsDeleted = 1 WHERE FileID = ?", (fid,), db='mkd')
+            deleted.append(fid)
+        except Exception as e:
+            print('mkd file delete error fid=%s: %s' % (fid, e))
+    return jsonify(ok=1, deleted=deleted, count=len(deleted))
+
+@app.route('/api/mkd/file/<int:fid>')
+def mkd_file_get(fid):
+    """Отдать файл МКД по id (картинку — всем, документ — после входа)."""
+    if not mkd_has('HouseFile'):
+        abort(404, 'Таблицы HouseFile нет.')
+    r = rows("SELECT * FROM AvtodorDB.dbo.HouseFile WHERE FileID = ? AND IsDeleted = 0", (fid,), db='mkd')
+    if not r:
+        abort(404)
+    r = r[0]
+    if not r['IsPhoto']:
+        if role() not in ('admin', 'editor'):
+            return jsonify(error='Нужно войти.'), 401
+    return send_from_directory(os.path.join(UPLOAD, 'mkd_%d' % r['HouseID']), r['StoredName'],
+                               as_attachment=not r['IsPhoto'], download_name=r['FileName'])
 
 @app.route('/api/mkd/uk/<int:uid>/contacts')
 def mkd_uk_contacts(uid):
