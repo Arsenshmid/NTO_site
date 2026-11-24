@@ -1542,6 +1542,10 @@ def export():
         # дополнительно: строки без term_end (договор бессрочный) попадают в active
         # SQL выше это уже учёл, здесь ничего не делаем
         pass
+    # ===== формат выгрузки: revision (бланк «Ревизия НТО») или full (по умолчанию) =====
+    fmt = (request.args.get('format') or 'full').lower()
+    if fmt == 'revision':
+        return _export_nto_revision(all_rows, scheme, state, q)
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'НТО'
     head = ['ID', 'В схеме', '№'] + FIELDS[2:] + ['Договор (расчёт)']
     ws.append(head)
@@ -1560,6 +1564,181 @@ def export():
     _style_xlsx_header(ws2, 2)
     b = io.BytesIO(); wb.save(b); b.seek(0)
     name = 'НТО_%s.xlsx' % datetime.date.today().strftime('%d.%m.%Y')
+    return send_file(b, as_attachment=True, download_name=name)
+
+
+def _export_nto_revision(all_rows, scheme, state, q):
+    """Выгрузка НТО в формате бланка «Ревизия НТО» (как образец пользователя).
+       Колонки: № п/п, ТОУ, ФИО собственника, ФИО арендатора, Адрес размещения,
+       Реквизиты договора (№/дата, срок, с кем заключён), специализация,
+       Соответствие специализации со схемой, Наличие специализации, Наличие ККТ.
+       Отличие «в схеме» от «вне схемы»:
+         - в схеме = муниципальная земля, договор с управой → ТОУ = «Автодорожный округ»,
+           реквизиты договора заполняются из базы, соответствие схемы = «да»
+         - вне схемы = частники на своей земле → ТОУ = «(вне схемы) — частник»,
+           договор обычно отсутствует, соответствие схемы = «нет» (объект не в схеме)"""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'Ревизия НТО'
+    # ====== Заголовок таблицы — двухуровневый с объединением ячеек ======
+    # Строка 1: № п/п | ТОУ | ФИО собственника | ФИО арендатора | Адрес размещения | Реквизиты договора (объединено F:H) | специализация | Соответствие... | Наличие... | ККТ
+    # Строка 2:     |     |                   |                 |                   | №, дата договора | срок договора | с кем заключен  |           |                 |             |
+    headers1 = ['№ п/п', 'ТОУ', 'ФИО собственника', 'ФИО арендатора', 'Адрес размещения',
+                'Реквизиты договора', '', '',
+                'специализация',
+                'Соответствие специализации со схемой размещения НТО в случае наличия объекта в Схеме',
+                'Наличие и соответствие заявленного вида специализации НТО',
+                'Наличие и исправность ККТ']
+    headers2 = ['', '', '', '', '',
+                '№, дата договора', 'срок договора', 'с кем заключен договор',
+                '', '', '', '']
+    ws.append(headers1)
+    ws.append(headers2)
+    # объединения ячеек в шапке
+    ws.merge_cells('A1:A2')   # № п/п
+    ws.merge_cells('B1:B2')   # ТОУ
+    ws.merge_cells('C1:C2')   # ФИО собственника
+    ws.merge_cells('D1:D2')   # ФИО арендатора
+    ws.merge_cells('E1:E2')   # Адрес размещения
+    ws.merge_cells('F1:H1')   # Реквизиты договора
+    ws.merge_cells('I1:I2')   # специализация
+    ws.merge_cells('J1:J2')   # Соответствие специализации
+    ws.merge_cells('K1:K2')   # Наличие специализации
+    ws.merge_cells('L1:L2')   # ККТ
+    # ====== Стиль шапки ======
+    head_font = Font(bold=True, color='FFFFFF', size=10)
+    head_fill = PatternFill('solid', fgColor='1F3A5F')
+    head_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    thin = Side(style='thin', color='808080')
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for r in (1, 2):
+        for c in range(1, 13):
+            cell = ws.cell(row=r, column=c)
+            cell.font = head_font
+            cell.fill = head_fill
+            cell.alignment = head_align
+            cell.border = border
+    # высота строк шапки
+    ws.row_dimensions[1].height = 50
+    ws.row_dimensions[2].height = 22
+    # ====== Данные ======
+    n = 0
+    in_scheme_count = 0
+    out_scheme_count = 0
+    for r in all_rows:
+        p = prep(r)
+        n += 1
+        if p['in_scheme']:
+            in_scheme_count += 1
+            # в схеме = муниципальная земля, договор с управой
+            tou = 'Администрация Автодорожного округа г. Якутска'
+            # собственник — ГО «город Якутск» (муниципальная земля)
+            owner = p.get('authority') or 'ГО «город Якутск»'
+            # арендатор — фактический пользователь (ИП/ООО)
+            tenant = p.get('owner_name') or ''
+            # реквизиты договора
+            contract_num = p.get('conditions') or ''
+            # срок договора
+            term = p.get('term_text') or ''
+            if not term and p.get('term_start') and p.get('term_end'):
+                term = str(p['term_start']) + ' – ' + str(p['term_end'])
+            # с кем заключён договор — с арендатором (ИП/ООО)
+            contract_with = p.get('owner_name') or ''
+            # соответствие схеме — да (объект в схеме)
+            scheme_match = 'да'
+            # наличие специализации
+            spec_present = 'да' if p.get('specialization') else 'нет'
+            # ККТ
+            kkt = p.get('chk_kkt') or ''
+            if not kkt:
+                # если нет явного признака — для объектов в схеме обычно «да»
+                kkt = 'да'
+        else:
+            out_scheme_count += 1
+            # вне схемы = частник на своей земле
+            tou = '(вне схемы) — частный объект'
+            # собственник — фактический владелец земли (частник)
+            owner = p.get('owner_name') or '(не указан)'
+            # арендатор — обычно тот же или пусто
+            tenant = p.get('owner_name') or ''
+            # реквизиты договора — обычно нет
+            contract_num = p.get('conditions') or '(нет договора)'
+            term = p.get('term_text') or '(нет)'
+            contract_with = p.get('owner_name') or ''
+            # соответствие схеме — нет (объект не входит в схему)
+            scheme_match = 'нет (объект вне схемы)'
+            # наличие специализации
+            spec_present = 'да' if p.get('specialization') else 'нет данных'
+            # ККТ — из базы или «не требуется» для мелких
+            kkt = p.get('chk_kkt') or 'не требуется'
+        # адрес — предпочтём address, иначе address_alt
+        addr = p.get('address') or p.get('address_alt') or '(не указан)'
+        ws.append([
+            n,                          # № п/п
+            tou,                        # ТОУ
+            owner,                      # ФИО собственника
+            tenant,                     # ФИО арендатора
+            addr,                       # Адрес размещения
+            contract_num,               # №, дата договора
+            term,                       # срок договора
+            contract_with,              # с кем заключен договор
+            p.get('specialization') or '',  # специализация
+            scheme_match,               # Соответствие специализации со схемой
+            spec_present,               # Наличие специализации
+            kkt                         # ККТ
+        ])
+    # ====== Стиль данных ======
+    data_align = Alignment(horizontal='left', vertical='top', wrap_text=True)
+    data_font = Font(size=10)
+    # альтернирующая заливка для читаемости
+    in_fill = PatternFill('solid', fgColor='EFF6FF')    # голубоватый — в схеме
+    out_fill = PatternFill('solid', fgColor='FEF3C7')   # желтоватый — вне схемы
+    last_row = ws.max_row
+    for r_idx in range(3, last_row + 1):
+        # определим, в схеме ли объект (по TOU в колонке B)
+        tou_val = ws.cell(row=r_idx, column=2).value or ''
+        is_in_scheme = 'Администрация' in tou_val
+        for c_idx in range(1, 13):
+            cell = ws.cell(row=r_idx, column=c_idx)
+            cell.font = data_font
+            cell.alignment = data_align
+            cell.border = border
+            if is_in_scheme:
+                cell.fill = in_fill
+            else:
+                cell.fill = out_fill
+    # закрепить шапку
+    ws.freeze_panes = 'A3'
+    # ширины колонок
+    widths = [6, 28, 30, 30, 35, 30, 28, 30, 25, 28, 28, 22]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    # высота строк данных — авто (но не меньше 30)
+    for r_idx in range(3, last_row + 1):
+        ws.row_dimensions[r_idx].height = 45
+    # ====== Второй лист — сводка ======
+    ws2 = wb.create_sheet('Сводка')
+    ws2.append(['Параметр', 'Значение'])
+    ws2.append(['Формат', 'Ревизия НТО (официальный бланк)'])
+    ws2.append(['Фильтр по схеме', {'all':'все','in':'в схеме','out':'вне схемы'}.get(scheme, scheme)])
+    ws2.append(['Фильтр по договору', {'all':'все','active':'действующие','expiring':'истекают','expired':'истёкшие'}.get(state, state)])
+    ws2.append(['Поиск', q or '(нет)'])
+    ws2.append(['Всего объектов', len(all_rows)])
+    ws2.append(['  в схеме (муниципальная земля, договор с управой)', in_scheme_count])
+    ws2.append(['  вне схемы (частники на своей земле)', out_scheme_count])
+    ws2.append(['Дата выгрузки', datetime.datetime.now().strftime('%d.%m.%Y %H:%M')])
+    _style_xlsx_header(ws2, 2)
+    # автоширина для сводки
+    for col in ws2.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            v = str(cell.value) if cell.value is not None else ''
+            if len(v) > max_len: max_len = len(v)
+        ws2.column_dimensions[col_letter].width = min(max(max_len + 2, 15), 70)
+    b = io.BytesIO(); wb.save(b); b.seek(0)
+    name = 'Ревизия_НТО_%s.xlsx' % datetime.date.today().strftime('%d.%m.%Y')
     return send_file(b, as_attachment=True, download_name=name)
 
 @app.route('/api/mkd/export.xlsx')

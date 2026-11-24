@@ -283,6 +283,7 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
     </select>
     <button id="bAdd" style="display:none"><span>+</span> Добавить НТО</button>
     <button id="bNtoExport" class="gray" onclick="exportNto()"><span>📊</span> Excel (с фильтрами)</button>
+    <button id="bNtoRevision" class="gray" onclick="exportNtoRevision()"><span>📋</span> Ревизия НТО</button>
     <a class="btn gray" href="/api/export.xlsx"><span>📊</span> Excel (все)</a>
     <button id="bJ" class="gray" style="display:none"><span>📜</span> Журнал</button>
   </div>
@@ -1156,6 +1157,37 @@ function exportNto(){
   if(schemeParam)params.push('scheme='+schemeParam);
   if(state!=='all')params.push('state='+state);
   url+=params.join('&');
+  window.location.href=url;
+}
+function exportNtoRevision(){
+  // Выгрузка в формате «Ревизия НТО» — официальный бланк
+  var q=$('q').value.trim();
+  var scheme=$('fScheme').value;
+  var stateTxt=$('fState').value.toLowerCase();
+  var stateMap={'действует':'active','истекает':'expiring','истёк':'expired'};
+  var state=stateMap[stateTxt]||'all';
+  var schemeParam='';
+  if(scheme==='1')schemeParam='in';
+  else if(scheme==='0')schemeParam='out';
+  var msg='Выгрузить НТО в формате «Ревизия НТО» (официальный бланк)?\n\n';
+  msg+='Формат: двухуровневая шапка с объединёнными ячейками,\n';
+  msg+='объекты в схеме — голубая заливка, вне схемы — жёлтая.\n\n';
+  msg+='Фильтры:\n';
+  msg+='  Поиск: '+(q||'(нет)')+'\n';
+  msg+='  Схема: '+(schemeParam==='in'?'в схеме':(schemeParam==='out'?'вне схемы':'все'))+'\n';
+  msg+='  Договор: '+(state==='all'?'все':stateMap[stateTxt]||'все')+'\n\n';
+  msg+='Колонки бланка:\n';
+  msg+='  № п/п, ТОУ, ФИО собственника, ФИО арендатора, Адрес,\n';
+  msg+='  Реквизиты договора (№, срок, с кем), специализация,\n';
+  msg+='  Соответствие схеме, Наличие специализации, ККТ\n\n';
+  msg+='Файл скачается автоматически.';
+  if(!confirm(msg))return;
+  var url='/api/export.xlsx?format=revision';
+  var params=[];
+  if(q)params.push('q='+encodeURIComponent(q));
+  if(schemeParam)params.push('scheme='+schemeParam);
+  if(state!=='all')params.push('state='+state);
+  if(params.length)url+='&'+params.join('&');
   window.location.href=url;
 }
 function exportMkd(){
