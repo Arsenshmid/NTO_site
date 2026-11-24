@@ -1255,7 +1255,7 @@ def mkd_files_list(hid):
         return jsonify([])
     try:
         r = rows("SELECT FileID AS id, FileName AS name, IsPhoto AS is_photo, "
-                 "SizeBytes AS size, UploadedBy AS by, UploadedAt AS at "
+                 "SizeBytes AS size, UploadedBy AS uploaded_by, UploadedAt AS uploaded_at "
                  "FROM AvtodorDB.dbo.HouseFile WHERE HouseID = ? AND IsDeleted = 0 "
                  "ORDER BY FileID", (hid,), db='mkd')
         return jsonify([{k: fmt(v) for k, v in row.items()} for row in r])
@@ -1470,18 +1470,206 @@ def mkd_table(table):
         return jsonify({'error': str(e)}), 500
 
 # ============ Экспорт ============
+def _style_xlsx_header(ws, ncols):
+    """Жирный шапечник + закрепление первой строки + автоширина."""
+    from openpyxl.styles import Font, PatternFill, Alignment
+    head_font = Font(bold=True, color='FFFFFF')
+    head_fill = PatternFill('solid', fgColor='1F3A5F')
+    for c in ws[1]:
+        c.font = head_font
+        c.fill = head_fill
+        c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    ws.freeze_panes = 'A2'
+    # автоширина
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            try:
+                v = str(cell.value) if cell.value is not None else ''
+                if len(v) > max_len:
+                    max_len = len(v)
+            except Exception:
+                pass
+        # ограничим ширину
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 10), 50)
+
 @app.route('/api/export.xlsx')
 def export():
+    """Выгрузка НТО в Excel с фильтрами.
+       Параметры (все необязательные):
+         scheme=all|in|out    — все / в схеме / вне схемы
+         state=all|active|expiring|expired  — статус договора
+         q=...               — поиск по адресу/владельцу/ИНН
+         uk=...               — не используется для НТО (для совместимости)
+       По умолчанию — все НТО."""
     import openpyxl
     from openpyxl.styles import Font
+    scheme = (request.args.get('scheme') or 'all').lower()
+    state = (request.args.get('state') or 'all').lower()
+    q = (request.args.get('q') or '').strip().lower()
+    # соберём SQL с фильтрами
+    sql = 'SELECT * FROM nto_object WHERE is_deleted=0'
+    params = []
+    if scheme == 'in':
+        sql += ' AND in_scheme=1'
+    elif scheme == 'out':
+        sql += ' AND in_scheme=0'
+    if state in ('active', 'expiring', 'expired'):
+        # фильтр по расчётному состоянию договора
+        # active — term_end >= сегодня + 30 дней
+        # expiring — term_end в ближайшие 30 дней
+        # expired — term_end < сегодня
+        today = datetime.date.today()
+        if state == 'active':
+            sql += " AND term_end IS NOT NULL AND term_end >= ?"
+            params.append(today + datetime.timedelta(days=30))
+        elif state == 'expiring':
+            sql += " AND term_end IS NOT NULL AND term_end >= ? AND term_end < ?"
+            params.append(today)
+            params.append(today + datetime.timedelta(days=30))
+        elif state == 'expired':
+            sql += " AND term_end IS NOT NULL AND term_end < ?"
+            params.append(today)
+    if q:
+        sql += " AND (LOWER(address) LIKE ? OR LOWER(owner_name) LIKE ? OR LOWER(inn) LIKE ? OR LOWER(specialization) LIKE ?)"
+        like = '%' + q + '%'
+        params.extend([like, like, like, like])
+    sql += ' ORDER BY in_scheme DESC, scheme_num, id'
+    all_rows = rows(sql, params)
+    # если q не задан, но state задан и нет term_end — фильтруем в Python
+    if state in ('active', 'expiring', 'expired') and not q:
+        # дополнительно: строки без term_end (договор бессрочный) попадают в active
+        # SQL выше это уже учёл, здесь ничего не делаем
+        pass
     wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'НТО'
     head = ['ID', 'В схеме', '№'] + FIELDS[2:] + ['Договор (расчёт)']
     ws.append(head)
-    for c in ws[1]: c.font = Font(bold=True)
-    for r in rows('SELECT * FROM nto_object WHERE is_deleted=0 ORDER BY in_scheme DESC, id'):
-        p = prep(r); ws.append([p['id'], 'да' if p['in_scheme'] else 'нет', p['scheme_num']] + [p.get(k) for k in FIELDS[2:]] + [p['state']])
+    for r in all_rows:
+        p = prep(r)
+        ws.append([p['id'], 'да' if p['in_scheme'] else 'нет', p['scheme_num']] + [p.get(k) for k in FIELDS[2:]] + [p['state']])
+    _style_xlsx_header(ws, len(head))
+    # добавим второй лист — сводка по фильтру
+    ws2 = wb.create_sheet('Сводка')
+    ws2.append(['Параметр', 'Значение'])
+    ws2.append(['Фильтр по схеме', {'all':'все','in':'в схеме','out':'вне схемы'}.get(scheme, scheme)])
+    ws2.append(['Фильтр по договору', {'all':'все','active':'действующие','expiring':'истекают','expired':'истёкшие'}.get(state, state)])
+    ws2.append(['Поиск', q or '(нет)'])
+    ws2.append(['Всего объектов', len(all_rows)])
+    ws2.append(['Дата выгрузки', datetime.datetime.now().strftime('%d.%m.%Y %H:%M')])
+    _style_xlsx_header(ws2, 2)
     b = io.BytesIO(); wb.save(b); b.seek(0)
-    return send_file(b, as_attachment=True, download_name='НТО_%s.xlsx' % datetime.date.today().strftime('%d.%m.%Y'))
+    name = 'НТО_%s.xlsx' % datetime.date.today().strftime('%d.%m.%Y')
+    return send_file(b, as_attachment=True, download_name=name)
+
+@app.route('/api/mkd/export.xlsx')
+def export_mkd():
+    """Выгрузка МКД в Excel с фильтрами.
+       Параметры:
+         uk=                 — id УК (или пусто = все УК)
+         filter=all|emergency|resettled|auction|no_uk|undefined|demolished|active — фильтр по статусу
+         q=                  — поиск по адресу/улице/УК
+         include_hidden=0|1  — включать скрытые с карты (по умолчанию 0)
+       По умолчанию — все видимые МКД."""
+    import openpyxl
+    if not mkd_has('House'):
+        return jsonify({'error': 'В базе AvtodorDB нет таблицы House.'}), 400
+    uk_filter = request.args.get('uk') or ''
+    status_filter = (request.args.get('filter') or 'all').lower()
+    q = (request.args.get('q') or '').strip().lower()
+    include_hidden = request.args.get('include_hidden', '0') == '1'
+    # соберём SQL — используем mkd_base_sql() для согласованности с API
+    sql = mkd_base_sql() + " WHERE 1=1"
+    params = []
+    if not include_hidden:
+        # если колонка IsHiddenFromMap существует — учтём
+        if rows("SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(N'AvtodorDB.dbo.House') AND name=N'IsHiddenFromMap'", db='mkd'):
+            sql += " AND ISNULL(h.IsHiddenFromMap, 0) = 0"
+    if uk_filter:
+        sql += " AND h.UKID = ?"
+        params.append(int(uk_filter))
+    if status_filter == 'emergency':
+        sql += " AND h.IsEmergency = 1"
+    elif status_filter == 'resettled':
+        if rows("SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(N'AvtodorDB.dbo.House') AND name=N'IsResettled'", db='mkd'):
+            sql += " AND h.IsResettled = 1"
+    elif status_filter == 'auction':
+        if rows("SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(N'AvtodorDB.dbo.House') AND name=N'IsAuction'", db='mkd'):
+            sql += " AND h.IsAuction = 1"
+    elif status_filter == 'no_uk':
+        sql += " AND (h.UKID IS NULL OR ISNULL(h.IsNoUk, 0) = 1)"
+    elif status_filter == 'undefined':
+        if rows("SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(N'AvtodorDB.dbo.House') AND name=N'IsUndefined'", db='mkd'):
+            sql += " AND h.IsUndefined = 1"
+    elif status_filter == 'demolished':
+        if rows("SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(N'AvtodorDB.dbo.House') AND name=N'IsDemolished'", db='mkd'):
+            sql += " AND h.IsDemolished = 1"
+    elif status_filter == 'active':
+        # действующие = не аварийные и не снесённые
+        sql += " AND ISNULL(h.IsEmergency, 0) = 0"
+        if rows("SELECT 1 FROM sys.columns WHERE object_id=OBJECT_ID(N'AvtodorDB.dbo.House') AND name=N'IsDemolished'", db='mkd'):
+            sql += " AND ISNULL(h.IsDemolished, 0) = 0"
+    if q:
+        sql += " AND (LOWER(h.FullAddress) LIKE ? OR LOWER(h.Street) LIKE ? OR LOWER(h.HouseNo) LIKE ? OR LOWER(ISNULL(uk.Name,'')) LIKE ?)"
+        like = '%' + q + '%'
+        params.extend([like, like, like, like])
+    sql += " ORDER BY h.Street, h.HouseNo"
+    try:
+        all_rows = rows(sql, params, db='mkd')
+    except Exception as e:
+        return jsonify({'error': 'Не удалось выполнить запрос: ' + str(e)}), 500
+    wb = openpyxl.Workbook(); ws = wb.active; ws.title = 'МКД'
+    head = ['ID', 'Адрес', 'Улица', 'Дом', 'УК', 'Тип дома', 'Отопление',
+            'Год', 'Этажей', 'Квартир', 'Жильцов', 'Площадь, м²', 'Квартал',
+            'Аварийный', 'Расселён', 'Снесён', 'Дата сноса', 'Распоряжение',
+            'Программа переселения', 'Аукцион', 'Без УК', 'Неопределённый',
+            'Запрос ЕГРН', 'Статус', 'Координаты (lat, lon)', 'Примечание']
+    ws.append(head)
+    for r in all_rows:
+        r = {k: fmt(v) for k, v in r.items()}
+        lat = r.get('lat'); lon = r.get('lon')
+        coords = ''
+        if lat and lon:
+            coords = str(lat) + ', ' + str(lon)
+        # дата сноса — обрежем до даты
+        dd = r.get('demo_date')
+        if dd and len(str(dd)) > 10:
+            dd = str(dd)[:10]
+        ws.append([
+            r.get('id'), r.get('address'), r.get('street'), r.get('house_no'),
+            r.get('uk') or r.get('uk_name') or '', r.get('house_type') or r.get('house_type_text') or '',
+            r.get('heating') or r.get('heating_text') or '', r.get('year_built'),
+            r.get('floors'), r.get('flats'), r.get('residents'), r.get('area'),
+            r.get('quarter'),
+            'да' if r.get('emergency') else 'нет',
+            'да' if r.get('resettled') else 'нет',
+            'да' if r.get('demolished') else 'нет',
+            dd, r.get('act_number') or '', r.get('relocation_program') or '',
+            'да' if r.get('auction') else 'нет',
+            'да' if r.get('no_uk') else 'нет',
+            'да' if r.get('undefined') else 'нет',
+            'да' if r.get('egrn_query') else 'нет',
+            r.get('status_text') or '', coords, r.get('note') or ''
+        ])
+    _style_xlsx_header(ws, len(head))
+    # второй лист — сводка
+    ws2 = wb.create_sheet('Сводка')
+    # получим имя УК для отображения
+    uk_name = '(все УК)'
+    if uk_filter and mkd_has('UK'):
+        u = rows("SELECT Name FROM dbo.UK WHERE UKID = ?", (int(uk_filter),), db='mkd')
+        if u: uk_name = u[0]['Name']
+    ws2.append(['Параметр', 'Значение'])
+    ws2.append(['УК', uk_name])
+    ws2.append(['Фильтр по статусу', {'all':'все','active':'действующие','emergency':'аварийные','resettled':'расселённые','auction':'на аукционе','no_uk':'без УК','undefined':'неопределённые','demolished':'снесённые'}.get(status_filter, status_filter)])
+    ws2.append(['Поиск', q or '(нет)'])
+    ws2.append(['Включая скрытые с карты', 'да' if include_hidden else 'нет'])
+    ws2.append(['Всего домов', len(all_rows)])
+    ws2.append(['Дата выгрузки', datetime.datetime.now().strftime('%d.%m.%Y %H:%M')])
+    _style_xlsx_header(ws2, 2)
+    b = io.BytesIO(); wb.save(b); b.seek(0)
+    name = 'МКД_%s.xlsx' % datetime.date.today().strftime('%d.%m.%Y')
+    return send_file(b, as_attachment=True, download_name=name)
 
 # ============ Маршруты страниц ============
 @app.route('/')

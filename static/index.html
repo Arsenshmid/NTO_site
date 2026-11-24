@@ -282,7 +282,8 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
       <option>Срок не указан</option><option>Нет договора</option>
     </select>
     <button id="bAdd" style="display:none"><span>+</span> Добавить НТО</button>
-    <a class="btn gray" href="/api/export.xlsx"><span>📊</span> Excel</a>
+    <button id="bNtoExport" class="gray" onclick="exportNto()"><span>📊</span> Excel (с фильтрами)</button>
+    <a class="btn gray" href="/api/export.xlsx"><span>📊</span> Excel (все)</a>
     <button id="bJ" class="gray" style="display:none"><span>📜</span> Журнал</button>
   </div>
   <div class="cnt" id="cnt"></div>
@@ -312,6 +313,7 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
       <option value="demolished">Снесённые</option>
     </select>
     <button id="bMkdAdd" style="display:none"><span>+</span> Добавить дом</button>
+    <button id="bMkdExport" class="gray" onclick="exportMkd()"><span>📊</span> Excel (с фильтрами)</button>
     <button id="bMkdUk" style="display:none"><span>🏢</span> УК и контакты</button>
     <button id="bMkdLog" class="gray" style="display:none"><span>📜</span> Журнал МКД</button>
   </div>
@@ -1127,6 +1129,61 @@ function loadMkd(){
     if(s===200){MKD_UKS=d;var cur=$('mkd_uk').value;$('mkd_uk').innerHTML='<option value="">Все УК</option>'+d.map(function(u){return '<option value="'+u.id+'">'+esc(u.name)+'</option>';}).join('');$('mkd_uk').value=cur;}
   });
   api('GET','/api/mkd/lookups',null,function(s,d){if(s===200)MKD_LOOKUPS=d;});
+}
+
+/* ============================================================
+   Экспорт в Excel — с диалогом выбора фильтров
+   ============================================================ */
+function exportNto(){
+  // построим URL с параметрами из текущих фильтров
+  var q=$('q').value.trim();
+  var scheme=$('fScheme').value;
+  var stateTxt=$('fState').value.toLowerCase();
+  var stateMap={'действует':'active','истекает':'expiring','истёк':'expired'};
+  var state=stateMap[stateTxt]||'all';
+  var schemeParam='';
+  if(scheme==='1')schemeParam='in';
+  else if(scheme==='0')schemeParam='out';
+  var msg='Выгрузить НТО в Excel со следующими фильтрами?\n\n';
+  msg+='Поиск: '+(q||'(нет)')+'\n';
+  msg+='Схема: '+(schemeParam==='in'?'в схеме':(schemeParam==='out'?'вне схемы':'все'))+'\n';
+  msg+='Договор: '+(state==='all'?'все':stateMap[stateTxt]||'все')+'\n\n';
+  msg+='Файл скачается автоматически. Откройте его в Excel.';
+  if(!confirm(msg))return;
+  var url='/api/export.xlsx?';
+  var params=[];
+  if(q)params.push('q='+encodeURIComponent(q));
+  if(schemeParam)params.push('scheme='+schemeParam);
+  if(state!=='all')params.push('state='+state);
+  url+=params.join('&');
+  window.location.href=url;
+}
+function exportMkd(){
+  var q=$('mkd_q').value.trim();
+  var uk=$('mkd_uk').value;
+  var flt=$('mkd_flt').value;
+  var fltTxt={'':'все','with_uk':'с УК','no_uk':'без УК','emergency':'аварийные',
+    'resettled':'расселённые','auction':'на аукционе','undefined':'неопределённые',
+    'demolished':'снесённые'}[flt]||'все';
+  var ukTxt='(все УК)';
+  if(uk){
+    var sel=$('mkd_uk');
+    ukTxt=sel.options[sel.selectedIndex]?sel.options[sel.selectedIndex].text:uk;
+  }
+  var msg='Выгрузить МКД в Excel со следующими фильтрами?\n\n';
+  msg+='Поиск: '+(q||'(нет)')+'\n';
+  msg+='УК: '+ukTxt+'\n';
+  msg+='Статус: '+fltTxt+'\n';
+  msg+='Скрытые с карты: нет (по умолчанию)\n\n';
+  msg+='Файл скачается автоматически. Откройте его в Excel.';
+  if(!confirm(msg))return;
+  var url='/api/mkd/export.xlsx?';
+  var params=[];
+  if(q)params.push('q='+encodeURIComponent(q));
+  if(uk)params.push('uk='+encodeURIComponent(uk));
+  if(flt)params.push('filter='+flt);
+  url+=params.join('&');
+  window.location.href=url;
 }
 function mkdFilter(){
   var words=$('mkd_q').value.toLowerCase().split(/\s+/).filter(Boolean);
