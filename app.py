@@ -322,6 +322,41 @@ def logout():
 def me():
     return jsonify({'name': session.get('name'), 'role': role()})
 
+@app.route('/api/stats')
+def stats():
+    """Публичная статистика для витрины (видна всем, без входа).
+       Собирает счётчики по НТО (в схеме/вне) и МКД (аварийные/с УК)."""
+    out = {'nto': 0, 'nto_in_scheme': 0, 'nto_out_scheme': 0,
+           'mkd': 0, 'mkd_emergency': 0, 'mkd_no_uk': 0, 'uk': 0, 'ok': True}
+    try:
+        r = rows('SELECT COUNT(*) AS n, SUM(CASE WHEN in_scheme=1 THEN 1 ELSE 0 END) AS s FROM nto_object WHERE is_deleted=0')
+        if r:
+            out['nto'] = r[0]['n'] or 0
+            out['nto_in_scheme'] = r[0]['s'] or 0
+            out['nto_out_scheme'] = out['nto'] - out['nto_in_scheme']
+    except Exception as e:
+        print('stats nto error:', e)
+    try:
+        if mkd_has('House'):
+            r = rows("SELECT COUNT(*) AS n FROM AvtodorDB.dbo.House", db='mkd')
+            out['mkd'] = r[0]['n'] if r else 0
+            # аварийные/без УК — если колонки есть
+            cols = set(c['name'].lower() for c in rows(
+                "SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(N'AvtodorDB.dbo.House')", db='mkd'))
+            if 'isemergency' in cols:
+                r = rows("SELECT COUNT(*) AS n FROM AvtodorDB.dbo.House WHERE IsEmergency = 1", db='mkd')
+                out['mkd_emergency'] = r[0]['n'] if r else 0
+            if 'isnouk' in cols:
+                r = rows("SELECT COUNT(*) AS n FROM AvtodorDB.dbo.House WHERE ISNULL(IsNoUk,0) = 1", db='mkd')
+                out['mkd_no_uk'] = r[0]['n'] if r else 0
+        if mkd_has('UK'):
+            r = rows("SELECT COUNT(*) AS n FROM AvtodorDB.dbo.UK", db='mkd')
+            out['uk'] = r[0]['n'] if r else 0
+    except Exception as e:
+        print('stats mkd error:', e)
+        out['ok'] = False
+    return jsonify(out)
+
 @app.route('/api/online')
 def online():
     if role() != 'admin':
@@ -402,6 +437,30 @@ def nto_edit(i):
         run('UPDATE nto_object SET %s, updated_at=SYSDATETIME() WHERE id=?' % ','.join(k + '=?' for k in ch), list(ch.values()) + [i])
         log_nto('изменение', i, {k: old[0][k] for k in ch}, ch)
     return jsonify(ok=1, changed=len(ch))
+
+@app.route('/api/nto/<int:i>/coords', methods=['PUT'])
+@need('editor')
+def nto_move(i):
+    """Переместить НТО на карте в новые координаты.
+       Обновляет lat/lon в nto_object. Принимает JSON: {"lat": 62.028, "lon": 129.731}"""
+    if not rows('SELECT id FROM nto_object WHERE id=? AND is_deleted=0', (i,)):
+        return jsonify({'error': 'НТО не найден.'}), 404
+    d = request.get_json() or {}
+    if 'lat' not in d or 'lon' not in d:
+        return jsonify({'error': 'Нужны lat и lon.'}), 400
+    try:
+        lat = float(d['lat']); lon = float(d['lon'])
+    except (TypeError, ValueError):
+        return jsonify({'error': 'lat/lon должны быть числами.'}), 400
+    if not (-90 <= lat <= 90):
+        return jsonify({'error': 'lat должна быть -90..90'}), 400
+    if not (-180 <= lon <= 180):
+        return jsonify({'error': 'lon должна быть -180..180'}), 400
+    old = rows('SELECT lat, lon FROM nto_object WHERE id=?', (i,))
+    run('UPDATE nto_object SET lat=?, lon=?, updated_at=SYSDATETIME() WHERE id=?', (lat, lon, i))
+    log_nto('перемещение на карте', i, {'lat': old[0]['lat'], 'lon': old[0]['lon']}, {'lat': lat, 'lon': lon})
+    return jsonify({'ok': True, 'lat': lat, 'lon': lon,
+                    'message': 'Координаты НТО №%s обновлены.' % i})
 
 @app.route('/api/nto/<int:i>', methods=['DELETE'])
 @need('admin')
