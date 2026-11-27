@@ -203,6 +203,18 @@ tr.demolished{opacity:0.55;text-decoration:line-through}
 .custom-marker.mkd .pin{border-radius:7px;transform:none}
 .custom-marker.mkd:hover .pin{transform:scale(1.15)}
 .custom-marker.mkd .pin::after{border-radius:3px;top:9px;left:9px}
+.custom-marker .attn{position:absolute;top:-13px;left:50%;transform:translateX(-50%);width:18px;height:18px;background:#dc2626;color:#fff;border:2px solid #fff;border-radius:50%;font-weight:800;font-size:12px;line-height:14px;text-align:center;box-shadow:0 2px 6px rgba(0,0,0,.35);z-index:5;pointer-events:none;animation:attnPulse 1.8s ease-in-out infinite}
+@keyframes attnPulse{0%,100%{transform:translateX(-50%) scale(1)}50%{transform:translateX(-50%) scale(1.25)}}
+.attn-box{display:flex;align-items:flex-start;gap:10px;padding:12px 14px;border-radius:var(--radius);background:linear-gradient(135deg,#fef2f2,#fee2e2);border:1px solid #fecaca;margin-bottom:14px}
+.attn-box .attn-ic{width:26px;height:26px;min-width:26px;background:#dc2626;color:#fff;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;animation:attnPulse2 1.8s ease-in-out infinite}
+@keyframes attnPulse2{0%,100%{transform:scale(1)}50%{transform:scale(1.15)}}
+.attn-box .attn-body{flex:1;font-size:13px;color:#7f1d1d}
+.attn-box .attn-body b{color:#991b1b}
+.attn-box .attn-note{margin-top:3px;color:#b91c1c;font-size:12.5px;line-height:1.45;white-space:pre-wrap}
+.attn-mark{color:#dc2626;font-weight:800;cursor:help}
+.pop-attn{margin:8px 0;padding:8px 10px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;font-size:12.5px;color:#991b1b;line-height:1.4;white-space:pre-wrap}
+button.warnb{background:#d97706}
+button.warnb:hover{background:#b45309}
 .map-kind-toggle{display:inline-flex;border:1px solid var(--line2);border-radius:8px;overflow:hidden}
 .map-kind-toggle button{border-radius:0;background:#fff;color:var(--fg2);padding:6px 14px}
 .map-kind-toggle button.on{background:var(--acc);color:#fff}
@@ -306,7 +318,7 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
     <input class="grow" id="q" placeholder="🔍 Поиск: адрес, ФИО, ИНН, специализация, телефон, договор…">
     <select id="fScheme">
       <option value="">Все объекты</option>
-      <option value="1">В схеме</option>
+      <option value="1" selected>В схеме</option>
       <option value="0">Вне схемы</option>
     </select>
     <select id="fState">
@@ -437,6 +449,11 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
           <button id="bMapKindNto" class="on" onclick="setMapKind('nto')">🏪 НТО</button>
           <button id="bMapKindMkd" onclick="setMapKind('mkd')">🏠 МКД</button>
         </span>
+        <span class="map-kind-toggle" id="mapSchemeToggle" title="Какие НТО показывать (по умолчанию — только в схеме)">
+          <button id="bSchIn" class="on" onclick="setMapScheme('in')">В схеме</button>
+          <button id="bSchAll" onclick="setMapScheme('all')">Все НТО</button>
+          <button id="bSchOut" onclick="setMapScheme('out')">Вне схемы</button>
+        </span>
         <input id="mapSearch" class="grow" placeholder="🔍 поиск по адресу или названию (фильтрует точки на карте)" style="min-width:280px">
         <span class="muted" id="mapSearchInfo"></span>
         <span style="flex:1"></span>
@@ -447,11 +464,13 @@ code{background:#f1f5f9;padding:2px 6px;border-radius:4px;font-family:ui-monospa
       </div>
       <div id="mapCanvas"></div>
       <div class="map-legend" id="mapLegend">
-        <span><i style="background:#dc2626"></i>Красная</span>
-        <span><i style="background:#16a34a"></i>Зелёная</span>
-        <span><i style="background:#2563eb"></i>Синяя (НТО в схеме)</span>
-        <span><i style="background:#d97706"></i>Оранжевая (вне схемы)</span>
-        <span class="muted" style="margin-left:auto">Пунктир = тестовая точка</span>
+        <span><i style="background:#16a34a"></i>Договор свежий</span>
+        <span><i style="background:#eab308"></i>Истекает (&lt;90 дней)</span>
+        <span><i style="background:#dc2626"></i>Истёк / на грани (&lt;30 дней)</span>
+        <span><i style="background:#2563eb"></i>В схеме, срок неизвестен</span>
+        <span><i style="background:#d97706"></i>Вне схемы</span>
+        <span style="color:#dc2626;font-weight:700">❗ требует внимания</span>
+        <span class="muted" style="margin-left:auto">Данные из NtoDB · пунктир = тестовая точка</span>
       </div>
       <div id="mapInfo" class="map-info-panel">Выберите точку на карте.</div>
     </div>
@@ -479,6 +498,7 @@ function setMapKind(k){
   MAP_KIND=k;
   $('bMapKindNto').className=(k==='nto')?'on':'';
   $('bMapKindMkd').className=(k==='mkd')?'on':'';
+  $('mapSchemeToggle').style.display=(k==='nto')?'inline-flex':'none';
   if(MAP_ADDING){MAP_ADDING=false;if(MAP)MAP.getContainer().style.cursor='';$('mapInfo').innerHTML='Выберите точку на карте.';}
   // сбросить поиск при переключении режима
   MAP_SEARCH='';if($('mapSearch'))$('mapSearch').value='';if($('mapSearchInfo'))$('mapSearchInfo').textContent='';
@@ -494,12 +514,23 @@ function updateMapLegend(){
       '<span><i style="background:#16a34a"></i>Без УК / не определён</span>'+
       '<span class="muted" style="margin-left:auto">Данные из AvtodorDB.House · клик → карточка МКД</span>';
   }else{
-    el.innerHTML='<span><i style="background:#dc2626"></i>Красная</span>'+
-      '<span><i style="background:#16a34a"></i>Зелёная</span>'+
-      '<span><i style="background:#2563eb"></i>Синяя (НТО в схеме)</span>'+
-      '<span><i style="background:#d97706"></i>Оранжевая (вне схемы)</span>'+
+    el.innerHTML='<span><i style="background:#16a34a"></i>Договор свежий</span>'+
+      '<span><i style="background:#eab308"></i>Истекает (&lt;90 дней)</span>'+
+      '<span><i style="background:#dc2626"></i>Истёк / на грани (&lt;30 дней)</span>'+
+      '<span><i style="background:#2563eb"></i>В схеме, срок неизвестен</span>'+
+      '<span><i style="background:#d97706"></i>Вне схемы</span>'+
+      '<span style="color:#dc2626;font-weight:700">❗ требует внимания</span>'+
       '<span class="muted" style="margin-left:auto">Данные из NtoDB · пунктир = тестовая точка</span>';
   }
+}
+var MAP_SCHEME='in';   // какие НТО показывать на карте: 'in' | 'all' | 'out'
+function setMapScheme(k){
+  if(MAP_SCHEME===k)return;
+  MAP_SCHEME=k;
+  $('bSchIn').className=(k==='in')?'on':'';
+  $('bSchAll').className=(k==='all')?'on':'';
+  $('bSchOut').className=(k==='out')?'on':'';
+  applyMapSearch();
 }
 var TILE_PROVIDERS=[], TILE_IDX=0, TILE_FAILS=0, TILE_OK=0;
 function tileFailed(){
@@ -753,7 +784,8 @@ function draw(){
     if(o.map_url&&!o.address)addr='<a href="'+esc(o.map_url)+'" target="_blank" onclick="event.stopPropagation()">ссылка</a>';
     var stateBadge='<span class="badge b-'+o.state.split(' ')[0]+'">'+esc(o.state)+'</span>';
     var files=o.files?('📄 '+o.files):'<span class="muted">—</span>';
-    t+='<tr class="row" onclick="openCard('+o.id+')"><td class="tnum">'+sc+'</td><td>'+tag+'</td><td class="taddr">'+addr+'</td><td class="tspec">'+esc(o.specialization||'—')+'</td><td class="tname">'+esc(o.owner_name||'—')+'</td><td class="tinn">'+esc(o.inn||'—')+'</td><td>'+esc(o.term_text||'—')+'</td><td>'+stateBadge+'</td><td class="tfiles">'+files+'</td></tr>';
+    var attn=o.attention?'<span class="attn-mark" title="'+esc(o.attention_note||'Требует внимания')+'">❗</span> ':'';
+    t+='<tr class="row" onclick="openCard('+o.id+')"><td class="tnum">'+attn+sc+'</td><td>'+tag+'</td><td class="taddr">'+addr+'</td><td class="tspec">'+esc(o.specialization||'—')+'</td><td class="tname">'+esc(o.owner_name||'—')+'</td><td class="tinn">'+esc(o.inn||'—')+'</td><td>'+esc(o.term_text||'—')+'</td><td>'+stateBadge+'</td><td class="tfiles">'+files+'</td></tr>';
   }
   $('tb').innerHTML=t;
   var inS=DATA.filter(function(o){return o.in_scheme}).length;
@@ -769,9 +801,15 @@ function sortBy(k){if(SORT===k)DIR=-DIR;else{SORT=k;DIR=1}draw();}
 function openCard(id){api('GET','/api/nto/'+id,null,function(s,o){if(s!==200){toast('Не удалось открыть: '+(o.error||s),'err');return;}CUR=o;renderCard(o);});}
 function renderCard(o){
   var ed=!!ROLE;
-  $('cardTitle').innerHTML=(o.id?('НТО № '+(o.scheme_num||'—')+(o.in_scheme?' <span class="tag-in">в схеме</span>':' <span class="tag-out">вне схемы</span>')):'Новый НТО');
+  $('cardTitle').innerHTML=(o.attention?'<span class="attn-mark" style="font-size:15px">❗</span> ':'')+(o.id?('НТО № '+(o.scheme_num||'—')+(o.in_scheme?' <span class="tag-in">в схеме</span>':' <span class="tag-out">вне схемы</span>')):'Новый НТО');
   $('cardState').innerHTML='<span class="badge b-'+(o.state||'Нет').split(' ')[0]+'">'+esc(o.state||'—')+'</span>';
-  var h='<div class="state-box"><span class="lbl">Состояние договора:</span><span class="val">'+esc(o.state||'—')+'</span><span class="hint">считается автоматически по сроку и примечаниям</span></div>';
+  var h='';
+  if(o.attention){
+    h+='<div class="attn-box"><span class="attn-ic">!</span><div class="attn-body"><b>Требует внимания</b>'+(o.attention_note?'<div class="attn-note">'+esc(o.attention_note)+'</div>':'')+'</div>'+(ed?'<button class="gray" style="margin-left:auto;flex-shrink:0" onclick="toggleAttention('+(o.id||0)+',0)">✓ Снять</button>':'')+'</div>';
+  }else if(ed&&o.id){
+    h+='<div style="margin-bottom:12px"><button class="warnb" onclick="toggleAttention('+(o.id||0)+',1)">❗ Пометить «требует внимания»</button></div>';
+  }
+  h+='<div class="state-box"><span class="lbl">Состояние договора:</span><span class="val">'+esc(o.state||'—')+'</span><span class="hint">считается автоматически по сроку и примечаниям</span></div>';
   for(var si=0;si<SECTIONS.length;si++){
     var sec=SECTIONS[si];
     h+='<div class="section"><h4><span class="sec-icon">'+sec.icon+'</span>'+sec.title+'</h4><div class="body">';
@@ -1082,7 +1120,7 @@ function loadMapMarkers(){
       var m=r[i];
       var isMkd=(m.source==='mkd'||m.object_type==='mkd');
       var color=m.color||'red';
-      var cssColor=color==='red'?'#dc2626':(color==='green'?'#16a34a':(color==='blue'?'#2563eb':(color==='orange'?'#d97706':color)));
+      var cssColor=color==='red'?'#dc2626':(color==='green'?'#16a34a':(color==='yellow'?'#eab308':(color==='blue'?'#2563eb':(color==='orange'?'#d97706':color))));
       if(isMkd){
         // приоритет цветов для МКД: аварийный → красный, на аукционе → оранжевый,
         // без УК / неопределённый → зелёный, иначе фиолетовый
@@ -1091,16 +1129,19 @@ function loadMapMarkers(){
         else if(m.no_uk||m.undefined)cssColor='#16a34a';
         else cssColor='#7c3aed';
       }
+      var attn=(!isMkd&&m.attention)?'<div class="attn">!</div>':'';
       var icon=L.divIcon({
         className:'custom-marker'+(m.is_test?' test':'')+(isMkd?' mkd':''),
-        html:'<div class="pin" style="background:'+cssColor+'"></div>',
+        html:'<div class="pin" style="background:'+cssColor+'"></div>'+attn,
         iconSize:[28,28], iconAnchor:[14,28], popupAnchor:[0,-28]
       });
       var marker=L.marker([m.lat,m.lon],{icon:icon,draggable:false}).addTo(MAP);
       marker._pointData=m;
       var popHtml='<b>'+(isMkd?'🏠 ':'')+esc(m.label||(('точка #'+m.id)))+'</b>';
       if(m.description)popHtml+='<br>'+esc(m.description).replace(/\n/g,'<br>');
+      if(!isMkd&&m.state)popHtml+='<br><span class="muted">договор: '+esc(m.state)+(m.term_end?' · до '+esc(m.term_end):'')+'</span>';
       if(!isMkd)popHtml+='<br><span class="muted">тип: '+esc(m.object_type||'nto')+' · '+(m.is_test?'тестовая':'обычная')+'</span>';
+      if(!isMkd&&m.attention)popHtml+='<div class="pop-attn"><b>❗ Требует внимания</b>'+(m.attention_note?'<br>'+esc(m.attention_note):'')+'</div>';
       popHtml+='<div class="pop-actions">';
       if(isMkd&&m.object_id){popHtml+='<button onclick="hide(\'mMap\');mkdHouse('+m.object_id+')">Открыть карточку МКД</button>';}
       if(isMkd&&m.object_id&&(ROLE==='admin'||ROLE==='editor')){
@@ -1108,6 +1149,11 @@ function loadMapMarkers(){
         popHtml+='<button class="gray" onclick="hideMkdFromMap('+m.object_id+',\''+esc(m.label||('дом #'+m.object_id)).replace(/'/g,"\\'")+'\')">Скрыть с карты</button>';
       }
       if(!isMkd&&m.object_id&&m.source==='nto'){popHtml+='<button onclick="hide(\'mMap\');openCard('+m.object_id+')">Открыть НТО</button>';}
+      if(!isMkd&&m.object_id&&(ROLE==='admin'||ROLE==='editor')){
+        popHtml+=m.attention
+          ?'<button class="gray" onclick="toggleAttention('+m.object_id+',0)">✓ Снять «внимание»</button>'
+          :'<button class="warnb" onclick="toggleAttention('+m.object_id+',1)">❗ Требует внимания</button>';
+      }
       if(ROLE==='admin'||ROLE==='editor'){if(!isMkd)popHtml+='<button class="gray" onclick="editMapPoint('+m.id+')">Изменить</button>';}
       if(ROLE==='admin'||ROLE==='editor'){if(!isMkd)popHtml+='<button class="gray" onclick="startMovePoint('+m.id+')">Переместить</button>';}
       if(ROLE==='admin'){if(!isMkd)popHtml+='<button class="red" onclick="delMapPoint('+m.id+')">Удалить</button>';}
@@ -1122,8 +1168,7 @@ function loadMapMarkers(){
       shown++;
     }
     if(!r.length)$('mapInfo').innerHTML='<b>Маркеров нет.</b> '+(MAP_KIND==='mkd'?'Выполните миграцию 11 (полное обновление базы AvtodorDB из Excel) — она добавит колонки Lat/Lon в таблицу House и заполнит координаты.':(ROLE?'Нажмите «Добавить точку» и кликните на карте.':'Войдите как редактор, чтобы добавлять точки.'));
-    else if(MAP_KIND==='mkd')$('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'дом','дома','домов')+' МКД · данные из базы <b>AvtodorDB</b>.House (SQL Server)';
-    else $('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'точка','точки','точек')+' НТО · данные из базы <b>NtoDB</b> (SQL Server)';
+    else applyMapSearch();
   });
 }
 function showMapInfo(p){
@@ -1136,6 +1181,20 @@ function showMapInfo(p){
   if(isMkd&&p.object_id)html+='<br><button onclick="hide(\'mMap\');mkdHouse('+p.object_id+')" style="margin-top:6px">Открыть карточку МКД</button>';
   if(!isMkd&&p.object_id&&p.source==='nto')html+='<br><button onclick="hide(\'mMap\');openCard('+p.object_id+')" style="margin-top:6px">Открыть карточку НТО №'+p.object_id+'</button>';
   $('mapInfo').innerHTML=html;
+}
+function toggleAttention(id,on){
+  if(!id){toast('Сначала сохраните НТО.','err');return;}
+  var note='';
+  if(on){
+    note=prompt('Что требует внимания?\nНапример: «Водник, 19.11 приезжали лично — компромисс: остановка-павильон с водокачкой 19 л»','')||'';
+  }
+  api('POST','/api/nto/'+id+'/attention',{on:on?1:0,note:note},function(s,r){
+    if(s!==200){toast('Ошибка: '+(r&&r.error||s),'err');return;}
+    toast(r.message,'ok');
+    loadMapMarkers();
+    if(CUR&&CUR.id===id)openCard(id);
+    else load();
+  });
 }
 function editMapPoint(id){
   // Найдём данные точки в загруженных маркерах
@@ -1700,13 +1759,22 @@ var mapSearchTm=null;
 function applyMapSearch(){
   if(!MAP_MARKERS.length)return;
   var q=MAP_SEARCH.toLowerCase().trim();
-  var shown=0,hidden=0;
+  var shown=0,hidden=0,inS=0;
   for(var i=0;i<MAP_MARKERS.length;i++){
     var m=MAP_MARKERS[i]._pointData;
-    var hay=((m.label||'')+' '+(m.description||'')+' '+(m.object_type||'')+' '+(m.uk_name||'')).toLowerCase();
-    if(!q||hay.indexOf(q)>=0){
+    var isMkd=(m.source==='mkd'||m.object_type==='mkd');
+    var hay=((m.label||'')+' '+(m.description||'')+' '+(m.object_type||'')+' '+(m.uk_name||'')+' '+(m.state||'')).toLowerCase();
+    var ok=(!q||hay.indexOf(q)>=0);
+    if(ok&&MAP_KIND==='nto'&&!isMkd){
+      // фильтр «в схеме / вне схемы»: точки без привязки к НТО всегда видны
+      var linked=(m.object_id!=null);
+      if(MAP_SCHEME==='in')ok=linked?(!!m.in_scheme):true;
+      else if(MAP_SCHEME==='out')ok=linked?(!m.in_scheme):true;
+    }
+    if(ok){
       if(!MAP.hasLayer(MAP_MARKERS[i]))MAP_MARKERS[i].addTo(MAP);
       shown++;
+      if(!isMkd&&m.in_scheme)inS++;
     }else{
       if(MAP.hasLayer(MAP_MARKERS[i]))MAP.removeLayer(MAP_MARKERS[i]);
       hidden++;
@@ -1716,6 +1784,13 @@ function applyMapSearch(){
   if(info){
     if(!q)info.textContent='';
     else info.textContent='найдено: '+shown+' (скрыто '+hidden+')';
+  }
+  if($('mapInfo')){
+    if(MAP_KIND==='mkd')$('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'дом','дома','домов')+' МКД · данные из базы <b>AvtodorDB</b>.House (SQL Server)';
+    else{
+      var flt=(MAP_SCHEME==='in')?' · фильтр: <b>только в схеме</b>':(MAP_SCHEME==='out'?' · фильтр: <b>только вне схемы</b>':'');
+      $('mapInfo').innerHTML='На карте: <b>'+shown+'</b> '+pluralRu(shown,'точка','точки','точек')+' НТО · в схеме: <b>'+inS+'</b>'+flt+' · данные из базы <b>NtoDB</b> (SQL Server)';
+    }
   }
   // если нашли ровно 1 — центрировать на нём
   if(q&&shown===1){

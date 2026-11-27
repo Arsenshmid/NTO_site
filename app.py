@@ -217,7 +217,62 @@ def state(o):
 def prep(o):
     r = {k: fmt(v) for k, v in o.items() if k not in ('created_at', 'updated_at')}
     r['state'] = state(o); r['in_scheme'] = 1 if o.get('in_scheme') else 0
+    r['attention'] = 1 if o.get('IsAttention') else 0
+    r['attention_note'] = o.get('AttentionNote') or ''
     return r
+
+# ============ «Требует внимания» + светофор договора ============
+_ATTENTION_READY = False
+
+def ensure_nto_attention():
+    """Колонки IsAttention/AttentionNote в NtoDB.nto_object добавим на лету
+       (один раз) — тот же приём, что и IsHiddenFromMap в AvtodorDB.House.
+       Отдельная миграция не нужна; sql/12 — только для порядка/бэкапа.
+       Если прав на ALTER нет — сайт продолжает работать без функции."""
+    global _ATTENTION_READY
+    if _ATTENTION_READY:
+        return
+    try:
+        if not rows("SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.nto_object') "
+                    "AND name = N'IsAttention'"):
+            run("ALTER TABLE dbo.nto_object ADD IsAttention BIT NOT NULL DEFAULT 0")
+        if not rows("SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'dbo.nto_object') "
+                    "AND name = N'AttentionNote'"):
+            run("ALTER TABLE dbo.nto_object ADD AttentionNote NVARCHAR(500) NULL")
+        _ATTENTION_READY = True
+    except Exception as e:
+        print('ensure_nto_attention (не критично, повторим позже):', e)
+
+def days_left(o):
+    """Сколько дней осталось до окончания договора (term_end); None — срока нет."""
+    e = o.get('term_end')
+    if isinstance(e, str):
+        try: e = pdate(e)
+        except Exception: e = None
+    if isinstance(e, datetime.datetime): e = e.date()
+    if not isinstance(e, datetime.date):
+        return None
+    return (e - datetime.date.today()).days
+
+def freshness(o):
+    """Светофор договора для НТО в схеме (цвет маркера на карте):
+       green — договор свежий (действует, запас ≥90 дней);
+       yellow — истекает: осталось 30–89 дней;
+       red — истёк, осталось <30 дней или договор расторгнут;
+       blue — в схеме, но срок по договору неизвестен."""
+    st = state(o)
+    if st in ('Расторгнут', 'Прекращён', 'На расторжение'):
+        return 'red'
+    d = days_left(o)
+    if st == 'Истёк' or (d is not None and d < 0):
+        return 'red'
+    if d is not None and d < 30:
+        return 'red'
+    if d is not None and d < 90:
+        return 'yellow'
+    if st == 'Действует':
+        return 'green'
+    return 'blue'
 
 # ============ Авторизация (имя + пароль) ============
 def role(): return session.get('role')
@@ -392,6 +447,7 @@ def clean(d):
 @app.route('/api/nto')
 def nto_list():
     q = (request.args.get('q') or '').lower().strip(); sc = request.args.get('scheme'); st = request.args.get('state')
+    ensure_nto_attention()
     data = [prep(o) for o in rows('SELECT * FROM nto_object WHERE is_deleted=0')]
     cnt = {r['object_id']: r['n'] for r in rows('SELECT object_id, COUNT(*) AS n FROM nto_file WHERE is_deleted=0 GROUP BY object_id')}
     out = []
@@ -405,6 +461,7 @@ def nto_list():
 
 @app.route('/api/nto/<int:i>')
 def nto_get(i):
+    ensure_nto_attention()
     r = rows('SELECT * FROM nto_object WHERE id=? AND is_deleted=0', (i,))
     if not r: abort(404)
     o = prep(r[0]); o['file_list'] = []
@@ -470,6 +527,35 @@ def nto_del(i):
     log_nto('удаление', i, old[0], None)
     run('UPDATE nto_object SET is_deleted=1, updated_at=SYSDATETIME() WHERE id=?', (i,))
     return jsonify(ok=1)
+
+@app.route('/api/nto/<int:i>/attention', methods=['POST'])
+@need('editor')
+def nto_attention(i):
+    """Пометить НТО «требует внимания» (или снять отметку).
+       Принимает JSON: {"on": 1|0, "note": "за что требует внимания"}.
+       Заметка видна в попапе карты, карточке и списке (❗), попадает в журнал."""
+    try:
+        ensure_nto_attention()
+        r = rows('SELECT id, scheme_num, ISNULL(IsAttention, 0) AS a, AttentionNote AS note '
+                 'FROM nto_object WHERE id=? AND is_deleted=0', (i,))
+    except Exception as e:
+        return jsonify({'error': 'Не удалось активировать колонки «внимания» в базе: %s' % e}), 400
+    if not r:
+        abort(404)
+    b = request.get_json() or {}
+    on = 1 if b.get('on') else 0
+    note = (b.get('note') or '').strip()
+    if on and not note:
+        note = (r[0].get('note') or '')   # включаем и без новой заметки — оставим старую
+    note = note[:500] if note else None
+    run('UPDATE nto_object SET IsAttention=?, AttentionNote=?, updated_at=SYSDATETIME() WHERE id=?', (on, note, i))
+    log_nto('внимание: ' + ('включено' if on else 'снято'), i,
+            {'attention': r[0]['a'], 'note': r[0].get('note')},
+            {'attention': on, 'note': note})
+    num = r[0].get('scheme_num') or i
+    msg = (('НТО №%s помечено «требует внимания»' % num) + ((' — ' + note) if note else '')) if on \
+        else ('Отметка «требует внимания» снята с НТО №%s' % num)
+    return jsonify({'ok': True, 'attention': bool(on), 'note': note or '', 'message': msg})
 
 # ============ Файлы ============
 @app.route('/api/nto/<int:i>/files', methods=['POST'])
@@ -702,17 +788,29 @@ def map_markers_list():
     # ============ РЕЖИМ НТО — точки из NtoDB ============
     # (только для НТО; object_type='mkd' больше НЕ используется для карты)
     try:
+        ensure_nto_attention()
         where = 'WHERE lat IS NOT NULL AND lon IS NOT NULL'
+        where_j = 'WHERE p.lat IS NOT NULL AND p.lon IS NOT NULL'
         if kind == 'nto':
             # карта зеркалит базу: точки МКД не показываем, а точки, привязанные
             # к удалённым/несуществующим НТО, скрываем (НТО мог быть удалён позже)
             where += (" AND ISNULL(object_type, 'nto') <> 'mkd'"
                       " AND (object_id IS NULL OR EXISTS (SELECT 1 FROM nto_object o"
                       " WHERE o.id = nto_map_point.object_id AND o.is_deleted = 0))")
-        pts = rows('SELECT id, object_id, object_type, lat, lon, label, color, is_test, description, updated_at '
-                   'FROM nto_map_point ' + where + ' ORDER BY id')
+            where_j += (" AND ISNULL(p.object_type, 'nto') <> 'mkd'"
+                        " AND (p.object_id IS NULL OR o.id IS NOT NULL)")
+        try:
+            # присоединим схему/внимание привязанного НТО — для фильтра и значка ❗
+            pts = rows('SELECT p.id, p.object_id, p.object_type, p.lat, p.lon, p.label, p.color, p.is_test, p.description, p.updated_at, '
+                       'o.in_scheme AS obj_in_scheme, o.IsAttention AS obj_attention, o.AttentionNote AS obj_note '
+                       'FROM nto_map_point p LEFT JOIN nto_object o ON o.id = p.object_id AND o.is_deleted = 0 '
+                       + where_j + ' ORDER BY p.id')
+        except Exception:
+            # колонок «внимания» ещё нет (нет прав на ALTER) — старый запрос
+            pts = rows('SELECT id, object_id, object_type, lat, lon, label, color, is_test, description, updated_at '
+                       'FROM nto_map_point ' + where + ' ORDER BY id')
         for r in pts:
-            out.append({
+            item = {
                 'source': 'custom',
                 'id': r['id'],
                 'object_id': r.get('object_id'),
@@ -723,7 +821,13 @@ def map_markers_list():
                 'color': r.get('color') or 'red',
                 'is_test': 1 if r.get('is_test') else 0,
                 'description': r.get('description') or '',
-            })
+            }
+            if r.get('obj_in_scheme') is not None:
+                item['in_scheme'] = 1 if r['obj_in_scheme'] else 0
+            if r.get('obj_attention') is not None:
+                item['attention'] = 1 if r['obj_attention'] else 0
+                item['attention_note'] = r.get('obj_note') or ''
+            out.append(item)
             if r.get('object_id'):
                 covered_object_ids.add(r['object_id'])
     except Exception as e:
@@ -731,11 +835,23 @@ def map_markers_list():
     # ============ НТО-объекты с координатами (пропускаем те, что уже показаны) ============
     if kind in ('nto', 'all'):
         try:
-            objs = rows('SELECT id, scheme_num, in_scheme, address, owner_name, inn, specialization, lat, lon '
-                        'FROM nto_object WHERE is_deleted=0 AND lat IS NOT NULL AND lon IS NOT NULL')
+            ensure_nto_attention()
+            try:
+                objs = rows('SELECT id, scheme_num, in_scheme, address, owner_name, inn, specialization, lat, lon, '
+                            'term_end, contract_state, conditions, notes, comment, chk_contract, IsAttention, AttentionNote '
+                            'FROM nto_object WHERE is_deleted=0 AND lat IS NOT NULL AND lon IS NOT NULL')
+            except Exception:
+                # колонок «внимания» ещё нет (нет прав на ALTER) — старый запрос
+                objs = rows('SELECT id, scheme_num, in_scheme, address, owner_name, inn, specialization, lat, lon '
+                            'FROM nto_object WHERE is_deleted=0 AND lat IS NOT NULL AND lon IS NOT NULL')
             for o in objs:
                 if o['id'] in covered_object_ids:
                     continue  # уже есть кастомный маркер с привязкой к этому НТО
+                st = state(o)
+                # светофор договора: green/yellow/red — по свежести, blue — в схеме,
+                # но срок неизвестен; вне схемы — оранжевый (фильтр карты прячет их
+                # по умолчанию, включается кнопкой «Все НТО»)
+                fresh = freshness(o) if o.get('in_scheme') else 'orange'
                 out.append({
                     'source': 'nto',
                     'id': o['id'],
@@ -744,7 +860,12 @@ def map_markers_list():
                     'lat': float(o['lat']),
                     'lon': float(o['lon']),
                     'label': '#' + str(o.get('scheme_num') or '?') + ' ' + (o.get('address') or ''),
-                    'color': 'blue' if o.get('in_scheme') else 'orange',
+                    'color': fresh,
+                    'in_scheme': 1 if o.get('in_scheme') else 0,
+                    'state': st,
+                    'term_end': fmt(o.get('term_end')) or '',
+                    'attention': 1 if o.get('IsAttention') else 0,
+                    'attention_note': o.get('AttentionNote') or '',
                     'is_test': 0,
                     'description': (o.get('specialization') or '') + ' · ' + (o.get('owner_name') or '') + (('\nИНН: ' + o['inn']) if o.get('inn') else ''),
                 })
